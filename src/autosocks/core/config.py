@@ -81,6 +81,8 @@ def load_config(path: Path) -> dict[str, object]:
         if not parser.has_section(section):
             continue
         for ini_key, config_key, value_type in keys:
+            if not parser.has_option(section, ini_key):
+                continue
             raw = parser.get(section, ini_key)
             if value_type is bool:
                 config[config_key] = raw.lower() in ("true", "yes", "1", "on")

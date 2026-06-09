@@ -61,6 +61,7 @@ def _show_help() -> None:
     print("  autosocks start      启动代理")
     print("  autosocks stop       停止代理")
     print("  autosocks restart    重启代理")
+    print("  autosocks env        设置代理环境变量")
     print("  autosocks version    显示版本")
     print()
 

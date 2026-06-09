@@ -11,8 +11,8 @@ class TestCheckLatestVersion:
         """返回最新版本号"""
         import json
         mock_response = MagicMock()
-        pypi_data = json.dumps({"info": {"version": "2.1.0"}}).encode()
-        mock_response.read.return_value = pypi_data
+        github_data = json.dumps([{"name": "v2.1.0"}]).encode()
+        mock_response.read.return_value = github_data
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_response
@@ -20,9 +20,35 @@ class TestCheckLatestVersion:
         version = check_latest_version()
         assert version == "2.1.0"
 
+    @patch("autosocks.plugins.update.urllib.request.urlopen")
+    def test_returns_version_without_v_prefix(self, mock_urlopen):
+        """返回不带 v 前缀的版本号"""
+        import json
+        mock_response = MagicMock()
+        github_data = json.dumps([{"name": "3.0.0"}]).encode()
+        mock_response.read.return_value = github_data
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        version = check_latest_version()
+        assert version == "3.0.0"
+
     @patch("autosocks.plugins.update.urllib.request.urlopen", side_effect=Exception("network error"))
     def test_network_error_returns_none(self, mock_urlopen):
         """网络错误返回 None"""
+        version = check_latest_version()
+        assert version is None
+
+    @patch("autosocks.plugins.update.urllib.request.urlopen")
+    def test_empty_response_returns_none(self, mock_urlopen):
+        """空响应返回 None"""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"[]"
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
         version = check_latest_version()
         assert version is None
 
@@ -36,7 +62,9 @@ class TestPerformUpdate:
         mock_run.return_value = MagicMock(returncode=0)
         result = perform_update()
         assert result is True
-        mock_run.assert_called_once()
+        # 确认使用 GitHub 源安装
+        cmd = mock_run.call_args[0][0]
+        assert "git+https://github.com/pwl1987/AutoSOCKS.git@main" in " ".join(cmd)
 
     @patch("autosocks.plugins.update.subprocess.run")
     def test_update_failure(self, mock_run):

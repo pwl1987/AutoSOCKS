@@ -99,7 +99,7 @@ fi
 
 # 安装 autosocks（优先从 GitHub 安装最新版）
 echo "  安装 autosocks 包..."
-if ! "$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main" 2>/dev/null; then
+if ! "$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main"; then
     # 如果 GitHub 安装失败，尝试从本地源码安装
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then

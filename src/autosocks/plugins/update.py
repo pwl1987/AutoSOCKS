@@ -8,34 +8,39 @@ import urllib.request
 from typing import Optional
 
 
-# PyPI JSON API（零依赖）
-_PIP_INDEX_URL = "https://pypi.org/pypi/autosocks/json"
+# GitHub API（检查最新 tag）
+_GITHUB_API_URL = "https://api.github.com/repos/pwl1987/AutoSOCKS/tags"
+
+# 安装源（从 GitHub main 分支安装）
+_INSTALL_SOURCE = "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main"
 
 
 def check_latest_version() -> Optional[str]:
-    """检查 PyPI 上的最新版本号。
+    """检查 GitHub 上的最新版本号。
 
     Returns:
         最新版本号字符串，网络错误返回 None
     """
     try:
-        req = urllib.request.Request(_PIP_INDEX_URL, headers={"Accept": "application/json"})
+        req = urllib.request.Request(_GITHUB_API_URL, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
-            return data["info"]["version"]
+            if data and isinstance(data, list):
+                return data[0]["name"].lstrip("v")
+            return None
     except Exception:
         return None
 
 
 def perform_update() -> bool:
-    """执行 pip install --upgrade autosocks。
+    """执行从 GitHub 安装最新版本。
 
     Returns:
         True 更新成功，False 失败
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "autosocks"],
+            [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", _INSTALL_SOURCE],
             capture_output=True, text=True, timeout=120,
         )
         return result.returncode == 0
