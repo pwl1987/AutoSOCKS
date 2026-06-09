@@ -10,6 +10,7 @@ from autosocks.core.config import load_config
 from autosocks.core.errors import show_error
 from autosocks.core.output import print_success, print_error, print_warning, print_info
 from autosocks.core.service import service_start, service_stop, service_restart, service_is_active
+from autosocks.plugins.env import env_set, env_unset
 
 
 CONFIG_PATH = Path("/etc/autosocks/config.conf")
@@ -43,6 +44,8 @@ def main(args: list[str] | None = None) -> None:
             _cmd_restart()
         case "status":
             _cmd_status()
+        case "env":
+            _cmd_env(args[1:])
         case _:
             print_error(f"未知命令：{command}", "E012")
             sys.exit(2)
@@ -143,3 +146,15 @@ def _cmd_status() -> None:
     else:
         print_warning("代理服务未运行")
         print_info("运行 autosocks start 启动代理")
+
+
+def _cmd_env(sub_args: list[str]) -> None:
+    """输出环境变量设置/清除命令。"""
+    if sub_args and sub_args[0] == "unset":
+        env_unset()
+        return
+
+    config = load_config(CONFIG_PATH)
+    bind = str(config.get("local_bind", "127.0.0.1"))
+    port = int(str(config.get("local_port", 1080)))
+    env_set(bind, port)
