@@ -258,12 +258,14 @@ def _cmd_daemon() -> None:
 
     cmd = build_ssh_command(config)
 
+    process = None
     try:
         process = subprocess.Popen(cmd)
         process.wait()
     except KeyboardInterrupt:
-        process.terminate()
-        process.wait()
+        if process:
+            process.terminate()
+            process.wait()
     except FileNotFoundError:
         print_error("SSH 未安装", "E007")
         sys.exit(1)
