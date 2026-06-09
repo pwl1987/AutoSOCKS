@@ -14,9 +14,18 @@ from autosocks.core.service import service_start, service_stop, service_restart,
 
 
 CONFIG_PATH = Path("/etc/autosocks/config.conf")
-
-# 刷新间隔（秒）
 _REFRESH_INTERVAL = 2.0
+
+# 颜色对 ID
+_CLR_TITLE = 1
+_CLR_RUNNING = 2
+_CLR_STOPPED = 3
+_CLR_SELECTED = 4
+_CLR_GROUP = 5
+_CLR_MSG = 6
+_CLR_KEYBAR = 7
+_CLR_BORDER = 8
+_CLR_DIM = 9
 
 
 @dataclass
@@ -24,6 +33,7 @@ class MenuItem:
     """菜单项"""
     label: str
     action: str
+    group: str = ""  # 分组标签（空字符串表示非分组标题）
 
 
 class TUIApp:
@@ -52,28 +62,50 @@ class TUIApp:
 
     @staticmethod
     def default_menu_items() -> list[MenuItem]:
-        """默认菜单项"""
+        """默认菜单项（含分组标题）"""
         return [
-            MenuItem("启动代理", "start"),
-            MenuItem("停止代理", "stop"),
-            MenuItem("重启代理", "restart"),
-            MenuItem("查看状态", "status"),
-            MenuItem("健康检查", "health"),
-            MenuItem("配置服务器", "install"),
-            MenuItem("HTTP 代理", "http_proxy"),
-            MenuItem("环境变量", "env"),
-            MenuItem("Shell 集成", "shell_integration"),
-            MenuItem("检查更新", "update"),
-            MenuItem("退出", "quit"),
+            MenuItem("── 代理管理 ──", "", group="header"),
+            MenuItem("  启动代理", "start"),
+            MenuItem("  停止代理", "stop"),
+            MenuItem("  重启代理", "restart"),
+            MenuItem("  查看状态", "status"),
+            MenuItem("── 诊断工具 ──", "", group="header"),
+            MenuItem("  健康检查", "health"),
+            MenuItem("  配置服务器", "install"),
+            MenuItem("  HTTP 代理", "http_proxy"),
+            MenuItem("── 系统工具 ──", "", group="header"),
+            MenuItem("  环境变量", "env"),
+            MenuItem("  Shell 集成", "shell_integration"),
+            MenuItem("  检查更新", "update"),
+            MenuItem("── 退出 ──", "", group="header"),
+            MenuItem("  退出", "quit"),
         ]
 
+    def _selectable_items(self) -> list[tuple[int, MenuItem]]:
+        """可选择的菜单项（排除分组标题）"""
+        return [(i, item) for i, item in enumerate(self.items) if item.group != "header"]
+
+    def _selectable_index(self) -> int:
+        """当前选中在可选项中的索引"""
+        selectable = self._selectable_items()
+        for idx, (i, _) in enumerate(selectable):
+            if i == self.selected:
+                return idx
+        return 0
+
     def move_up(self) -> None:
-        """上移光标"""
-        self.selected = (self.selected - 1) % len(self.items)
+        """上移光标（跳过分组标题）"""
+        selectable = self._selectable_items()
+        idx = self._selectable_index()
+        new_idx = (idx - 1) % len(selectable)
+        self.selected = selectable[new_idx][0]
 
     def move_down(self) -> None:
-        """下移光标"""
-        self.selected = (self.selected + 1) % len(self.items)
+        """下移光标（跳过分组标题）"""
+        selectable = self._selectable_items()
+        idx = self._selectable_index()
+        new_idx = (idx + 1) % len(selectable)
+        self.selected = selectable[new_idx][0]
 
     def get_selected_action(self) -> str:
         """获取选中项的 action"""
@@ -96,77 +128,132 @@ class TUIApp:
             return
         curses.wrapper(self._main_loop)
 
+    def _init_colors(self) -> None:
+        """初始化颜色"""
+        try:
+            curses.use_default_colors()
+            curses.init_pair(_CLR_TITLE, curses.COLOR_CYAN, -1)
+            curses.init_pair(_CLR_RUNNING, curses.COLOR_GREEN, -1)
+            curses.init_pair(_CLR_STOPPED, curses.COLOR_RED, -1)
+            curses.init_pair(_CLR_SELECTED, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(_CLR_GROUP, curses.COLOR_YELLOW, -1)
+            curses.init_pair(_CLR_MSG, curses.COLOR_WHITE, -1)
+            curses.init_pair(_CLR_KEYBAR, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            curses.init_pair(_CLR_BORDER, curses.COLOR_BLUE, -1)
+            curses.init_pair(_CLR_DIM, curses.COLOR_WHITE, -1)
+        except curses.error:
+            pass
+
     def _main_loop(self, stdscr: curses.window) -> None:
-        """curses 主循环（后台刷新状态）"""
+        """curses 主循环"""
+        self._init_colors()
         curses.curs_set(0)
-        stdscr.nodelay(True)  # 非阻塞输入，支持后台刷新
+        curses.noecho()
+        stdscr.nodelay(True)
+        stdscr.keypad(True)
 
         while self.running:
             self._draw(stdscr)
             key = stdscr.getch()
             if key != -1:
                 self._handle_key(key, stdscr)
-            time.sleep(0.05)  # 50ms 轮询
+            time.sleep(0.05)
 
     def _draw(self, stdscr: curses.window) -> None:
         """绘制界面"""
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
-        # 标题
-        title = f" AutoSOCKS v{__version__} "
+        # ── 顶栏 ──
         try:
-            stdscr.addstr(0, max(0, (width - len(title)) // 2), title[:width], curses.A_REVERSE)
+            # 上边框
+            stdscr.addstr(0, 0, "┌" + "─" * (width - 2) + "┐", curses.color_pair(_CLR_BORDER))
         except curses.error:
             pass
 
-        # 实时状态栏
-        now = time.time()
-        if now - self._last_refresh > _REFRESH_INTERVAL:
-            self._last_refresh = now
+        # 标题行
+        title = f"  AutoSOCKS v{__version__}  "
+        try:
+            stdscr.addstr(1, 0, "│", curses.color_pair(_CLR_BORDER))
+            stdscr.addstr(1, 2, title, curses.color_pair(_CLR_TITLE) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # 状态指示
         active = service_is_active()
         status_text = "● 运行中" if active else "○ 未运行"
-        status_attr = curses.color_pair(2) if active else curses.color_pair(1)
+        status_clr = _CLR_RUNNING if active else _CLR_STOPPED
         try:
-            curses.init_pair(1, curses.COLOR_RED, -1)
-            curses.init_pair(2, curses.COLOR_GREEN, -1)
-        except curses.error:
-            status_attr = curses.A_NORMAL
-        try:
-            stdscr.addstr(1, 4, status_text, status_attr)
+            stdscr.addstr(1, width - 14, status_text, curses.color_pair(status_clr) | curses.A_BOLD)
+            stdscr.addstr(1, width - 1, "│", curses.color_pair(_CLR_BORDER))
         except curses.error:
             pass
 
-        # 菜单
-        start_y = 3
+        # 分隔线
+        try:
+            stdscr.addstr(2, 0, "├" + "─" * (width - 2) + "┤", curses.color_pair(_CLR_BORDER))
+        except curses.error:
+            pass
+
+        # ── 菜单区 ──
+        menu_start = 3
+        menu_end = height - 3  # 留底部空间
         for i, item in enumerate(self.items):
-            y = start_y + i
-            if y >= height - 2:
+            y = menu_start + i
+            if y >= menu_end:
                 break
-            label = f"  ▸ {item.label}" if i == self.selected else f"    {item.label}"
+
             try:
-                if i == self.selected:
-                    stdscr.addstr(y, 4, label[:width - 4], curses.A_REVERSE)
+                if item.group == "header":
+                    # 分组标题
+                    stdscr.addstr(y, 2, item.label, curses.color_pair(_CLR_GROUP) | curses.A_BOLD)
+                elif i == self.selected:
+                    # 选中项
+                    label = item.label
+                    stdscr.addstr(y, 2, label[:width - 4], curses.color_pair(_CLR_SELECTED) | curses.A_BOLD)
                 else:
-                    stdscr.addstr(y, 4, label[:width - 4])
+                    # 普通项
+                    stdscr.addstr(y, 2, item.label[:width - 4], curses.color_pair(_CLR_DIM))
             except curses.error:
                 pass
 
-        # 消息区
-        if self.message:
-            msg_y = start_y + len(self.items) + 2
-            if msg_y < height - 1:
-                lines = self.message.split("\n")
-                for j, line in enumerate(lines):
-                    if msg_y + j < height - 1:
-                        try:
-                            stdscr.addstr(msg_y + j, 2, line[:width - 4])
-                        except curses.error:
-                            pass
+        # ── 消息区 ──
+        msg_start = menu_start + len(self.items) + 1
+        if self.message and msg_start < menu_end:
+            # 消息分隔线
+            try:
+                stdscr.addstr(msg_start, 2, "─" * min(width - 6, 40), curses.color_pair(_CLR_BORDER))
+            except curses.error:
+                pass
+            # 消息内容
+            lines = self.message.split("\n")
+            for j, line in enumerate(lines):
+                msg_y = msg_start + 1 + j
+                if msg_y >= menu_end:
+                    break
+                try:
+                    stdscr.addstr(msg_y, 3, line[:width - 6], curses.color_pair(_CLR_MSG))
+                except curses.error:
+                    pass
 
-        # 底部提示
+        # ── 底栏 ──
         try:
-            stdscr.addstr(height - 1, 2, " ↑↓ 选择  Enter 执行  q 退出 ", curses.A_DIM)
+            stdscr.addstr(height - 2, 0, "├" + "─" * (width - 2) + "┤", curses.color_pair(_CLR_BORDER))
+        except curses.error:
+            pass
+
+        # 快捷键栏
+        keybar = " ↑/↓ 选择  Enter 执行  q 退出 "
+        try:
+            stdscr.addstr(height - 1, 0, "│", curses.color_pair(_CLR_BORDER))
+            stdscr.addstr(height - 1, 2, keybar, curses.color_pair(_CLR_KEYBAR))
+            stdscr.addstr(height - 1, width - 1, "│", curses.color_pair(_CLR_BORDER))
+        except curses.error:
+            pass
+
+        # 右下角填充
+        try:
+            stdscr.addstr(height - 1, min(len(keybar) + 2, width - 2), " " * max(0, width - len(keybar) - 4), curses.color_pair(_CLR_KEYBAR))
         except curses.error:
             pass
 
@@ -181,15 +268,20 @@ class TUIApp:
         elif key == ord("\n") or key == curses.KEY_ENTER:
             action = self.get_selected_action()
             if action == "install":
-                # install 需要挂起 curses 进行交互输入
                 self._do_install_interactive(stdscr)
             else:
                 self.execute_action(action)
         elif key == ord("q"):
             self.quit()
+        elif key == ord("s"):
+            self.execute_action("start")
+        elif key == ord("S"):
+            self.execute_action("stop")
+        elif key == ord("r"):
+            self.execute_action("restart")
 
     def _suspend_curses(self, stdscr: curses.window) -> None:
-        """挂起 curses（用于交互输入）"""
+        """挂起 curses"""
         stdscr.clear()
         stdscr.refresh()
         curses.endwin()
@@ -224,6 +316,23 @@ class TUIApp:
         except (EOFError, KeyboardInterrupt):
             choice = ""
         self._resume_curses(stdscr)
+        if not choice:
+            return default
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return int(choice) - 1
+        return default
+
+    def _curses_select_static(self, prompt: str, options: list[str], default: int = 0) -> int:
+        """非 curses 环境的选择"""
+        print(f"\n{prompt}")
+        for i, opt in enumerate(options):
+            marker = " →" if i == default else "  "
+            print(f"{marker} {i + 1}. {opt}")
+        print()
+        try:
+            choice = input(f"请选择 [1-{len(options)}]（默认 {default + 1}）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return default
         if not choice:
             return default
         if choice.isdigit() and 1 <= int(choice) <= len(options):
@@ -299,7 +408,6 @@ class TUIApp:
             self.message_time = time.time()
             return
 
-        # 解析
         if "@" in server_input:
             user, host_part = server_input.split("@", 1)
         else:
@@ -339,7 +447,6 @@ class TUIApp:
         self.message_time = time.time()
 
     def _do_install(self) -> str:
-        # 由 _do_install_interactive 处理，这里不应被直接调用
         return ""
 
     def _do_http_proxy(self) -> str:
@@ -386,23 +493,6 @@ class TUIApp:
         else:
             uninstall_integration(script_path)
             return "已卸载 Shell 集成"
-
-    def _curses_select_static(self, prompt: str, options: list[str], default: int = 0) -> int:
-        """非 curses 环境的静态选择（shell 中）"""
-        print(f"\n{prompt}")
-        for i, opt in enumerate(options):
-            marker = " →" if i == default else "  "
-            print(f"{marker} {i + 1}. {opt}")
-        print()
-        try:
-            choice = input(f"请选择 [1-{len(options)}]（默认 {default + 1}）: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return default
-        if not choice:
-            return default
-        if choice.isdigit() and 1 <= int(choice) <= len(options):
-            return int(choice) - 1
-        return default
 
     def _do_update(self) -> str:
         from autosocks.plugins.update import check_latest_version, perform_update
