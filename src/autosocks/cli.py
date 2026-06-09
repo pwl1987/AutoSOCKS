@@ -52,6 +52,8 @@ def main(args: list[str] | None = None) -> None:
             _cmd_env(args[1:])
         case "install":
             _cmd_install()
+        case "tui":
+            _cmd_tui()
         case "--daemon":
             _cmd_daemon()
         case _:
@@ -70,6 +72,7 @@ def _show_help() -> None:
         "  autosocks restart   重启代理",
         "  autosocks status    查看状态",
         "  autosocks env       设置代理环境变量",
+        "  autosocks tui       TUI 交互界面",
         "  autosocks version   显示版本",
     ])
 
@@ -256,6 +259,16 @@ def _cmd_install() -> None:
         "  autosocks status   查看状态",
         "  autosocks env      设置环境变量",
     ])
+
+
+def _cmd_tui() -> None:
+    """启动 TUI 交互界面。"""
+    if not sys.stdout.isatty():
+        print_error("TUI 需要终端环境")
+        return
+    from autosocks.plugins.tui.app import TUIApp
+    app = TUIApp()
+    app.run()
 
 
 def _cmd_daemon() -> None:
