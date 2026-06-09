@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from autosocks import __version__
-from autosocks.core.config import load_config
+from autosocks.core.config import load_config, save_config
 from autosocks.core.errors import show_error
 from autosocks.core.output import print_success, print_error, print_warning, print_info
 from autosocks.core.service import service_start, service_stop, service_restart, service_is_active
+from autosocks.core.tunnel import build_ssh_command
 from autosocks.plugins.env import env_set, env_unset
 
 
@@ -46,6 +48,10 @@ def main(args: list[str] | None = None) -> None:
             _cmd_status()
         case "env":
             _cmd_env(args[1:])
+        case "install":
+            _cmd_install()
+        case "--daemon":
+            _cmd_daemon()
         case _:
             print_error(f"未知命令：{command}", "E012")
             sys.exit(2)
@@ -57,12 +63,13 @@ def _show_help() -> None:
     print("AutoSOCKS - 极简Linux代理工具")
     print()
     print("常用命令：")
-    print("  autosocks status     查看状态")
-    print("  autosocks start      启动代理")
-    print("  autosocks stop       停止代理")
-    print("  autosocks restart    重启代理")
-    print("  autosocks env        设置代理环境变量")
-    print("  autosocks version    显示版本")
+    print("  autosocks install   交互式配置")
+    print("  autosocks status    查看状态")
+    print("  autosocks start     启动代理")
+    print("  autosocks stop      停止代理")
+    print("  autosocks restart   重启代理")
+    print("  autosocks env       设置代理环境变量")
+    print("  autosocks version   显示版本")
     print()
 
 
@@ -159,3 +166,104 @@ def _cmd_env(sub_args: list[str]) -> None:
     bind = str(config.get("local_bind", "127.0.0.1"))
     port = int(str(config.get("local_port", 1080)))
     env_set(bind, port)
+
+
+def _cmd_install() -> None:
+    """交互式配置向导。"""
+    if not check_root():
+        return
+
+    print()
+    print("AutoSOCKS 配置向导")
+    print("──────────────────")
+    print()
+
+    # 服务器地址
+    print("请输入 SSH 代理服务器信息：")
+    print("  格式：user@host  或  user@host:port")
+    print()
+    try:
+        server_input = input("服务器地址（例如 root@1.2.3.4）: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not server_input:
+        print_error("服务器地址不能为空")
+        return
+
+    # 解析 user@host[:port]
+    if "@" in server_input:
+        user, host_part = server_input.split("@", 1)
+    else:
+        user = "root"
+        host_part = server_input
+
+    if ":" in host_part:
+        host, port_str = host_part.rsplit(":", 1)
+        server_port = int(port_str) if port_str.isdigit() else 22
+    else:
+        host = host_part
+        server_port = 22
+
+    # 本地端口
+    try:
+        local_port_input = input("本地 SOCKS5 端口（默认 1080）: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    local_port = int(local_port_input) if local_port_input.isdigit() else 1080
+
+    # 认证方式
+    try:
+        key_input = input("SSH 密钥路径（默认 ~/.ssh/id_rsa，留空则密码认证）: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if key_input:
+        auth_type = "key"
+        key_path = key_input
+    else:
+        auth_type = "password"
+        key_path = ""
+
+    # 保存配置
+    config = {
+        "server_host": host,
+        "server_user": user,
+        "server_port": server_port,
+        "local_port": local_port,
+        "auth_type": auth_type,
+        "auth_key_path": key_path,
+    }
+
+    save_config(CONFIG_PATH, config)
+    print()
+    print_success("配置已保存")
+    print(f"  服务器：{user}@{host}:{server_port}")
+    print(f"  本地端口：{local_port}")
+    print(f"  认证方式：{auth_type}")
+    print()
+    print_info("运行 autosocks start 启动代理")
+
+
+def _cmd_daemon() -> None:
+    """守护进程模式（systemd ExecStart 使用）。"""
+    config = load_config(CONFIG_PATH)
+
+    if not config.get("server_host"):
+        print_error("未配置服务器地址")
+        sys.exit(1)
+
+    cmd = build_ssh_command(config)
+
+    try:
+        process = subprocess.Popen(cmd)
+        process.wait()
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+    except FileNotFoundError:
+        print_error("SSH 未安装", "E007")
+        sys.exit(1)
