@@ -26,7 +26,10 @@ def check_latest_version() -> Optional[str]:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
             if data and isinstance(data, list):
-                return data[0]["name"].lstrip("v")
+                first_tag = data[0]
+                if isinstance(first_tag, dict):
+                    name: str = str(first_tag.get("name", ""))
+                    return name.lstrip("v") if name else None
             return None
     except Exception:
         return None

@@ -1,6 +1,4 @@
 """output.py 测试 - 颜色输出函数"""
-import io
-import os
 
 from autosocks.core.output import print_success, print_error, print_warning, print_info
 

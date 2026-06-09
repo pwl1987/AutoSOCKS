@@ -7,13 +7,14 @@
 - **一行安装**：`curl | bash` 安装体验，自动检测 Python 环境
 - **本地安装**：`--local` 从本地源码安装，无需网络
 - **交互式配置**：`autosocks install` TUI 向导式配置服务器
-- **TUI 界面**：`autosocks tui` 全屏 curses 交互界面
+- **TUI 界面**：`autosocks tui` 双栏布局全屏 curses 交互界面
+- **后台运行**：TUI 关闭后代理服务持续运行（systemd 管理）
 - **SOCKS5 代理**：基于 SSH `-D` 动态端口转发
 - **HTTP 代理**：支持 gost SOCKS5→HTTP 转换（可选 Privoxy）
 - **服务管理**：systemd 守护进程，开机自启，自动重连
 - **健康检查**：服务状态 + 代理可用性 + 延迟采样
 - **GeoIP 分流**：基于 CIDR IP 列表的国内外流量分流
-- **多 Profile**：`~/.autosocks.d/` 多服务器配置管理
+- **多 Profile**：多服务器配置管理（创建/切换/删除）
 - **Webhook 告警**：JSON POST 推送到外部服务
 - **Shell 集成**：`eval $(autosocks env)` 自动设置代理环境变量
 - **自更新**：检查 GitHub 最新版本，一键升级
@@ -90,10 +91,14 @@ sudo autosocks install
 ```
 
 配置流程：
-1. 输入服务器地址（格式：`user@host[:port]`）
+1. 输入服务器地址（格式：`user@host[:port]`，支持 IPv6）
 2. 输入本地 SOCKS5 端口（默认 1080）
-3. 选择认证方式（SSH 密钥 / 密码认证）
-4. 预览配置，确认保存
+3. 输入绑定地址（默认 127.0.0.1）
+4. 选择认证方式（SSH 密钥 / 密码认证）
+5. 配置心跳间隔、连接超时
+6. 配置自动重连
+7. 配置日志
+8. 预览配置，确认保存
 
 #### `autosocks start`
 
@@ -151,18 +156,51 @@ eval "$(autosocks env unset)"
 
 #### `autosocks tui`
 
-启动全屏 TUI 交互界面（curses）。
+启动全屏 TUI 交互界面（curses 双栏布局）。
 
 ```bash
 sudo autosocks tui
 ```
 
-操作：
-- `↑/↓` 或 `j/k`：选择菜单项
-- `Enter`：执行操作
-- `q`：退出
+**界面布局**：左侧菜单栏 + 右侧实时状态面板
 
-菜单功能：启动代理、停止代理、重启代理、查看状态、配置服务器、退出
+**快捷键**：
+
+| 快捷键 | 功能 |
+|--------|------|
+| `↑/↓` 或 `j/k` | 移动选择 |
+| `Enter` | 执行操作 |
+| `PgUp/PgDn` | 翻页 |
+| `s` | 启动代理 |
+| `S` | 停止代理 |
+| `r` | 重启代理 |
+| `i` | 查看状态 |
+| `h` | 健康检查 |
+| `d` | 后台运行（关闭 TUI，代理继续运行） |
+| `q` | 退出 |
+
+**菜单分组（6 组 27 项）**：
+
+| 分组 | 菜单项 |
+|------|--------|
+| 代理管理 | 启动/停止/重启代理、运行状态、健康检查、延迟测试 |
+| 代理工具 | HTTP 代理转发、环境变量、Shell 集成 |
+| 配置编辑 | 配置向导、服务器/本地端口/认证/SSH 参数/重连/日志/Webhook 告警/GeoIP 分流 |
+| Profile | 查看/创建/切换/删除 Profile |
+| 系统工具 | 查看完整配置、查看日志、检查更新、后台运行 |
+| 退出 | 退出 TUI |
+
+**右侧状态面板实时显示**：
+- 服务运行状态（运行中/已停止）
+- 延迟（ms）和出口 IP（异步后台检测）
+- 服务器信息、SSH 端口、本地监听地址
+- 认证方式、心跳/超时参数、重连状态
+- SOCKS5/HTTP 代理地址
+- 操作结果消息（成功/失败/警告，自动超时清除）
+
+**后台运行**：
+- 按 `d` 一键切换后台模式，TUI 关闭后代理服务持续运行
+- 退出时自动提示后台运行状态和管理命令
 
 #### `autosocks version`
 
@@ -237,6 +275,8 @@ enabled = true
 max_size = 1048576
 ```
 
+Profile 文件位于 `/etc/autosocks/profiles/`，格式与主配置相同。
+
 ### 错误码
 
 | 错误码 | 说明 |
@@ -273,7 +313,8 @@ from autosocks.plugins.profile import create_profile, list_profiles, delete_prof
 from autosocks.plugins.webhook import send_webhook
 from autosocks.plugins.tui.beautify import panel, table_row, divider
 from autosocks.plugins.tui.menu import select_option, input_text
-from autosocks.plugins.tui.dashboard import render_dashboard, DashboardData
+from autosocks.plugins.tui.dashboard import render_dashboard, render_dashboard_plain, DashboardData
+from autosocks.plugins.tui.app import TUIApp
 ```
 
 ## 项目结构
@@ -299,10 +340,11 @@ src/autosocks/
 │   ├── update.py               # 自更新
 │   ├── webhook.py              # Webhook 告警
 │   └── tui/
+│       ├── __init__.py         # 模块导出
 │       ├── beautify.py         # L1 美化面板
 │       ├── menu.py             # L2 交互式菜单
-│       ├── dashboard.py        # L3 实时仪表盘
-│       └── app.py              # L3 全屏 TUI (curses)
+│       ├── dashboard.py        # L3 实时仪表盘（ANSI + 纯文本）
+│       └── app.py              # L3 全屏 TUI (curses 双栏布局)
 └── utils/
 install.sh                      # Bash 安装/卸载器
 ```
@@ -318,7 +360,6 @@ install.sh                      # Bash 安装/卸载器
 
 - `gost`：HTTP 代理（SOCKS5→HTTP 转换）
 - `privoxy`：HTTP 代理（备选方案）
-- `textual`：完整 TUI 界面（`pip install autosocks[tui]`）
 
 ## 开发
 
@@ -328,11 +369,11 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 运行测试（115 tests）
+# 运行测试（158 tests）
 pytest tests/ -v
 
 # 代码检查
-ruff check src/
+ruff check src/ tests/
 mypy src/ --ignore-missing-imports
 ```
 

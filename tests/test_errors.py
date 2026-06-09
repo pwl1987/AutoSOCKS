@@ -1,5 +1,4 @@
 """errors.py 测试 - 错误码映射和友好提示"""
-import re
 
 from autosocks.core.errors import show_error
 

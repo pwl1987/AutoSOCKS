@@ -223,8 +223,10 @@ def _cmd_install() -> None:
 
     if auth_type == "key":
         key_path = input_text("SSH 密钥路径", default="~/.ssh/id_rsa")
+        auth_password = ""
     else:
         key_path = ""
+        auth_password = input_text("SSH 密码")
 
     # 确认
     divider()
@@ -247,6 +249,7 @@ def _cmd_install() -> None:
         "local_port": local_port,
         "auth_type": auth_type,
         "auth_key_path": key_path,
+        "auth_password": auth_password,
     }
 
     save_config(CONFIG_PATH, config)
@@ -266,9 +269,23 @@ def _cmd_tui() -> None:
     if not sys.stdout.isatty():
         print_error("TUI 需要终端环境")
         return
+    if os.geteuid() != 0:
+        print_warning("建议使用 sudo 运行，部分操作需要 root 权限")
     from autosocks.plugins.tui.app import TUIApp
     app = TUIApp()
     app.run()
+    # TUI 关闭后，如果服务正在运行则提示后台运行
+    if service_is_active():
+        config = load_config(CONFIG_PATH)
+        panel("AutoSOCKS 后台运行中", [
+            f"服务器  {config.get('server_user', 'root')}@{config.get('server_host', '')}",
+            f"端口    {config.get('local_port', 1080)}",
+            "",
+            "管理命令:",
+            "  autosocks status  查看状态",
+            "  autosocks stop    停止代理",
+            "  autosocks tui     重新打开 TUI",
+        ])
 
 
 def _cmd_daemon() -> None:

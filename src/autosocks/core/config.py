@@ -25,6 +25,7 @@ DEFAULTS: dict[str, object] = {
     "local_bind": "127.0.0.1",
     "auth_type": "key",
     "auth_key_path": "",
+    "auth_password": "",
     "ssh_keepalive": 60,
     "ssh_timeout": 10,
     "reconnect_enabled": True,
@@ -47,6 +48,7 @@ _SECTION_MAP: dict[str, list[tuple[str, str, type]]] = {
     "auth": [
         ("type", "auth_type", str),
         ("key_path", "auth_key_path", str),
+        ("password", "auth_password", str),
     ],
     "ssh": [
         ("keepalive", "ssh_keepalive", int),

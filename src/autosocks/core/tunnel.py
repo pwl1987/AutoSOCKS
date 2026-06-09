@@ -1,12 +1,16 @@
 """SSH 隧道管理"""
 from __future__ import annotations
 
+import shutil
 import subprocess
 from typing import Optional
 
 
 def build_ssh_command(config: dict[str, object]) -> list[str]:
     """构建 SSH SOCKS5 隧道命令行。
+
+    支持密钥认证 (auth_type=key) 和密码认证 (auth_type=password)。
+    密码认证使用 sshpass（需系统安装 sshpass）。
 
     Args:
         config: 配置字典
@@ -23,6 +27,7 @@ def build_ssh_command(config: dict[str, object]) -> list[str]:
     timeout = str(config["ssh_timeout"])
     auth_type = config["auth_type"]
     key_path = config.get("auth_key_path", "")
+    auth_password = config.get("auth_password", "")
 
     cmd = [
         "ssh",
@@ -36,6 +41,13 @@ def build_ssh_command(config: dict[str, object]) -> list[str]:
 
     if auth_type == "key" and key_path:
         cmd.extend(["-i", str(key_path)])
+    elif auth_type == "password" and auth_password:
+        # 使用 sshpass 传递密码
+        sshpass_path = shutil.which("sshpass")
+        if sshpass_path:
+            cmd = [sshpass_path, "-p", str(auth_password)] + cmd
+            # 密码认证时禁用公钥认证，避免尝试密钥
+            cmd.extend(["-o", "PreferredAuthentications=password"])
 
     cmd.append(f"{user}@{host}")
 

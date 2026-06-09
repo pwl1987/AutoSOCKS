@@ -71,6 +71,7 @@ class TestSaveConfig:
             "local_bind": "0.0.0.0",
             "auth_type": "key",
             "auth_key_path": "~/.ssh/my_key",
+            "auth_password": "",
             "ssh_keepalive": 120,
             "ssh_timeout": 15,
             "reconnect_enabled": False,
