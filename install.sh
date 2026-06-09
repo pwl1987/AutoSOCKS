@@ -97,10 +97,10 @@ if [ ! -d "$AUTOSOCKS_VENV" ]; then
     "$PYTHON_CMD" -m venv "$AUTOSOCKS_VENV"
 fi
 
-# 安装 autosocks
+# 安装 autosocks（优先从 GitHub 安装最新版）
 echo "  安装 autosocks 包..."
-"$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade autosocks 2>/dev/null || {
-    # 如果 pip 从 PyPI 安装失败，尝试从本地安装
+if ! "$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main" 2>/dev/null; then
+    # 如果 GitHub 安装失败，尝试从本地源码安装
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
         echo "  从本地源码安装..."
@@ -109,7 +109,7 @@ echo "  安装 autosocks 包..."
         echo -e "${RED}❌ 安装失败，请检查网络连接${NC}" >&2
         exit 1
     fi
-}
+fi
 
 # 创建 wrapper 脚本
 echo "  创建启动脚本: $AUTOSOCKS_BIN"
