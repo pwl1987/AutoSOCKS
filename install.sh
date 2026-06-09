@@ -1,13 +1,10 @@
 #!/bin/bash
 # AutoSOCKS 安装器
-# 用法：curl -fsSL https://raw.githubusercontent.com/pwl1987/AutoSOCKS/main/install.sh | sudo bash -s -- --server user@1.2.3.4
-#
-# 功能：
-#   1. 检测 Python 3.10+
-#   2. 创建 venv
-#   3. pip install autosocks
-#   4. 生成 systemd unit 文件
-#   5. 可选：交互式配置服务器地址
+# 用法：
+#   远程安装：curl -fsSL https://raw.githubusercontent.com/pwl1987/AutoSOCKS/main/install.sh | sudo bash
+#   本地安装：sudo bash install.sh --local
+#   指定服务器：sudo bash install.sh --server user@1.2.3.4
+#   卸载：      sudo bash install.sh --uninstall
 
 set -euo pipefail
 
@@ -25,6 +22,8 @@ CONFIG_DIR="/etc/autosocks"
 
 # 参数
 SERVER_ARG=""
+LOCAL_INSTALL=false
+DO_UNINSTALL=false
 
 # 解析参数
 while [ $# -gt 0 ]; do
@@ -33,8 +32,20 @@ while [ $# -gt 0 ]; do
             SERVER_ARG="$2"
             shift 2
             ;;
+        --local)
+            LOCAL_INSTALL=true
+            shift
+            ;;
+        --uninstall)
+            DO_UNINSTALL=true
+            shift
+            ;;
         --help)
-            echo "用法：curl ... | sudo bash -s -- [--server user@1.2.3.4]"
+            echo "用法："
+            echo "  sudo bash install.sh              # 从 GitHub 安装"
+            echo "  sudo bash install.sh --local       # 从本地源码安装"
+            echo "  sudo bash install.sh --server user@host"
+            echo "  sudo bash install.sh --uninstall   # 卸载"
             exit 0
             ;;
         *)
@@ -44,7 +55,68 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# ==================== 预检查 ====================
+# ==================== 卸载 ====================
+
+if [ "$DO_UNINSTALL" = true ]; then
+    echo -e "${YELLOW}AutoSOCKS 卸载器${NC}"
+    echo ""
+
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}❌ 需要 root 权限${NC}" >&2
+        exit 1
+    fi
+
+    # 停止服务
+    if systemctl is-active --quiet autosocks 2>/dev/null; then
+        echo "  停止 autosocks 服务..."
+        systemctl stop autosocks
+    fi
+
+    # 禁用服务
+    if systemctl is-enabled --quiet autosocks 2>/dev/null; then
+        echo "  禁用 autosocks 服务..."
+        systemctl disable autosocks
+    fi
+
+    # 删除 systemd unit
+    if [ -f "$SERVICE_FILE" ]; then
+        echo "  删除 systemd 服务文件"
+        rm -f "$SERVICE_FILE"
+        systemctl daemon-reload
+    fi
+
+    # 删除 wrapper 脚本
+    if [ -f "$AUTOSOCKS_BIN" ]; then
+        echo "  删除启动脚本: $AUTOSOCKS_BIN"
+        rm -f "$AUTOSOCKS_BIN"
+    fi
+
+    # 删除 venv
+    if [ -d "$AUTOSOCKS_VENV" ]; then
+        echo "  删除虚拟环境: $AUTOSOCKS_VENV"
+        rm -rf "$AUTOSOCKS_VENV"
+    fi
+
+    # 询问是否删除配置
+    if [ -d "$CONFIG_DIR" ]; then
+        echo ""
+        read -rp "是否删除配置文件 $CONFIG_DIR？[y/N] " CONFIRM
+        if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
+            echo "  删除配置目录: $CONFIG_DIR"
+            rm -rf "$CONFIG_DIR"
+        else
+            echo "  保留配置目录: $CONFIG_DIR"
+        fi
+    fi
+
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  AutoSOCKS 已卸载${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    exit 0
+fi
+
+# ==================== 安装 ====================
 
 echo -e "${GREEN}AutoSOCKS 安装器${NC}"
 echo ""
@@ -86,8 +158,6 @@ if ! command -v systemctl &>/dev/null; then
     exit 1
 fi
 
-# ==================== 安装 ====================
-
 echo ""
 echo "📦 开始安装..."
 
@@ -97,15 +167,21 @@ if [ ! -d "$AUTOSOCKS_VENV" ]; then
     "$PYTHON_CMD" -m venv "$AUTOSOCKS_VENV"
 fi
 
-# 安装 autosocks（优先从 GitHub 安装最新版）
-echo "  安装 autosocks 包..."
-if ! "$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main"; then
-    # 如果 GitHub 安装失败，尝试从本地源码安装
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
-        echo "  从本地源码安装..."
-        "$AUTOSOCKS_VENV/bin/pip" install --quiet "$SCRIPT_DIR"
-    else
+# 安装 autosocks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ "$LOCAL_INSTALL" = true ]; then
+    # 从本地源码安装
+    echo "  从本地源码安装: $SCRIPT_DIR"
+    "$AUTOSOCKS_VENV/bin/pip" install --quiet "$SCRIPT_DIR"
+elif [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+    # 检测到本地源码，优先本地安装
+    echo "  检测到本地源码，从本地安装: $SCRIPT_DIR"
+    "$AUTOSOCKS_VENV/bin/pip" install --quiet "$SCRIPT_DIR"
+else
+    # 从 GitHub 安装
+    echo "  从 GitHub 安装最新版..."
+    if ! "$AUTOSOCKS_VENV/bin/pip" install --quiet --upgrade "autosocks @ git+https://github.com/pwl1987/AutoSOCKS.git@main"; then
         echo -e "${RED}❌ 安装失败，请检查网络连接${NC}" >&2
         exit 1
     fi
