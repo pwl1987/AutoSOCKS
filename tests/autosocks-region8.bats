@@ -517,3 +517,29 @@ EOF
     run bash "$SCRIPT" --reconfigure 2>&1
     echo "$output" | grep -q "未安装\|root\|权限"
 }
+
+# ============================================================
+# TDD 修复验证
+# ============================================================
+
+@test "URL: 帮助信息不含占位符 github.com/xxx" {
+    local script="${BATS_TEST_DIRNAME:-$(dirname "$BATS_TEST_FILENAME")}/../autosocks"
+    run bash "$script" help --all 2>&1
+    ! echo "$output" | grep -q "github.com/xxx"
+}
+
+@test "URL: 头部注释包含正确的 GitHub 仓库地址" {
+    local script="${BATS_TEST_DIRNAME:-$(dirname "$BATS_TEST_FILENAME")}/../autosocks"
+    result=$(head -10 "$script")
+    echo "$result" | grep -q "github.com/pwl1987/AutoSOCKS"
+}
+
+@test "路径: CHINA_IP_LIST_FILE 不是硬编码的 /home/code 路径" {
+    local script="${BATS_TEST_DIRNAME:-$(dirname "$BATS_TEST_FILENAME")}/../autosocks"
+    ! grep -q 'CHINA_IP_LIST_FILE="/home/code' "$script"
+}
+
+@test "清理: 不存在 _main_old 残留函数" {
+    local script="${BATS_TEST_DIRNAME:-$(dirname "$BATS_TEST_FILENAME")}/../autosocks"
+    ! grep -q '_main_old()' "$script"
+}

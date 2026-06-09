@@ -5,7 +5,7 @@
 # 作者：AutoSOCKS Team
 # 版本：1.0.0
 # 许可：MIT
-# 仓库：https://github.com/xxx/autosocks
+# 仓库：https://github.com/pwl1987/AutoSOCKS
 #
 # 用法：autosocks [命令] [参数]
 #
@@ -70,7 +70,7 @@ fi
 CHINA_IP_LIST_URL="https://raw.githubusercontent.com/apricot-suit/chinanet-list/main/china_ip_list.txt"
 
 # 国内IP列表文件路径
-CHINA_IP_LIST_FILE="/home/code/AutoSOCKS/CHINA_IP_LIST.txt"
+CHINA_IP_LIST_FILE="${AUTOSOCKS_DATA_DIR:-${CONFIG_DIR:-/etc/autosocks}}/CHINA_IP_LIST.txt"
 
 # IP列表更新配置 (周日=0)
 IP_LIST_UPDATE_DAY="0"
@@ -179,7 +179,7 @@ show_help_short() {
     echo "  autosocks restart    重启代理"
     echo ""
     echo "查看所有命令：autosocks help --all"
-    echo "需要帮助？https://github.com/xxx/autosocks/wiki"
+    echo "需要帮助？https://github.com/pwl1987/AutoSOCKS/wiki"
     echo ""
 }
 
@@ -264,7 +264,7 @@ show_help_full() {
     echo "  autosocks --profile work start"
     echo "  autosocks --profile home status"
     echo ""
-    echo "需要帮助？https://github.com/xxx/autosocks/wiki"
+    echo "需要帮助？https://github.com/pwl1987/AutoSOCKS/wiki"
     echo ""
 }
 
@@ -458,12 +458,12 @@ show_error() {
             echo ""
             echo "试试这个："
             echo "• 查看日志：autosocks logs"
-            echo "• 搜索解决方案：https://github.com/xxx/autosocks/issues"
+            echo "• 搜索解决方案：https://github.com/pwl1987/AutoSOCKS/issues"
             ;;
     esac
     echo ""
     echo "────────────────────────────────"
-    echo "🔍 搜索解决方案：https://github.com/xxx/autosocks/error/$error_code"
+    echo "🔍 搜索解决方案：https://github.com/pwl1987/AutoSOCKS/error/$error_code"
     echo ""
 }
 
@@ -2045,7 +2045,7 @@ service_create_config() {
     cat > "$service_file" << 'EOF'
 [Unit]
 Description=AutoSOCKS Proxy Service
-Documentation=https://github.com/xxx/autosocks
+Documentation=https://github.com/pwl1987/AutoSOCKS
 After=network-online.target
 Wants=network-online.target
 
@@ -4130,59 +4130,6 @@ main() {
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 旧版 main 函数（保留以便回滚）
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_main_old() {
-    local command="${1:-help}"
-    shift 2>/dev/null || true
-
-    case "$command" in
-        install)
-            cmd_install "$@"
-            ;;
-        uninstall)
-            cmd_uninstall "$@"
-            ;;
-        start)
-            cmd_start "$@"
-            ;;
-        stop)
-            cmd_stop "$@"
-            ;;
-        restart)
-            cmd_restart "$@"
-            ;;
-        status)
-            cmd_status "$@"
-            ;;
-        logs)
-            cmd_logs "$@"
-            ;;
-        check-pubkey)
-            cmd_check_pubkey "$@"
-            ;;
-        enable-pubkey)
-            cmd_enable_pubkey "$@"
-            ;;
-        config)
-            cmd_config "$@"
-            ;;
-        export)
-            cmd_export "$@"
-            ;;
-        import)
-            cmd_import "$@"
-            ;;
-        help|--help|-h)
-            show_help "$@"
-            ;;
-        *)
-            show_help "$@"
-            ;;
-    esac
-}
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 命令占位函数
 # 说明：这些函数将在后续故事中实现，目前返回占位信息
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4789,7 +4736,7 @@ cmd_uninstall() {
     print_success "AutoSOCKS 已卸载"
     echo ""
     echo "感谢使用 AutoSOCKS！"
-    echo "如需再次安装，请访问：https://github.com/xxx/autosocks"
+    echo "如需再次安装，请访问：https://github.com/pwl1987/AutoSOCKS"
     echo ""
 
     # 记录最后的日志（在删除日志文件之前）
@@ -5211,8 +5158,7 @@ _status_text_active() {
     local local_port="${LOCAL_PORT:-1080}"
     local http_port="${HTTP_PROXY_PORT:-8080}"
 
-    # SOCKS5 状态
-    local socks_status="运行中"
+    # SOCKS5 状态（默认运行中，此处由后续输出逻辑使用）
 
     # HTTP 代理状态
     local http_status="❌ 未启用"

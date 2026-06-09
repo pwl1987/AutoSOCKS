@@ -1,4 +1,4 @@
-# AutoSOCKS
+# AutoSOCKS v1.0.0
 
 极简 Linux SSH SOCKS5 代理管理工具。
 
