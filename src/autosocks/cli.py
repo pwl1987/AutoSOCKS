@@ -13,6 +13,8 @@ from autosocks.core.output import print_success, print_error, print_warning, pri
 from autosocks.core.service import service_start, service_stop, service_restart, service_is_active
 from autosocks.core.tunnel import build_ssh_command
 from autosocks.plugins.env import env_set, env_unset
+from autosocks.plugins.tui.beautify import panel, divider
+from autosocks.plugins.tui.menu import select_option, input_text
 
 
 CONFIG_PATH = Path("/etc/autosocks/config.conf")
@@ -169,27 +171,15 @@ def _cmd_env(sub_args: list[str]) -> None:
 
 
 def _cmd_install() -> None:
-    """交互式配置向导。"""
+    """交互式配置向导（TUI）。"""
     if not check_root():
         return
 
-    print()
-    print("AutoSOCKS 配置向导")
-    print("──────────────────")
-    print()
+    panel("AutoSOCKS 配置向导", ["让我们配置你的代理服务器"])
 
     # 服务器地址
-    print("请输入 SSH 代理服务器信息：")
-    print("  格式：user@host  或  user@host:port")
-    print()
-    try:
-        server_input = input("服务器地址（例如 root@1.2.3.4）: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return
-
+    server_input = input_text("服务器地址（user@host[:port]）", required=True)
     if not server_input:
-        print_error("服务器地址不能为空")
         return
 
     # 解析 user@host[:port]
@@ -207,26 +197,34 @@ def _cmd_install() -> None:
         server_port = 22
 
     # 本地端口
-    try:
-        local_port_input = input("本地 SOCKS5 端口（默认 1080）: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return
-    local_port = int(local_port_input) if local_port_input.isdigit() else 1080
+    local_port_str = input_text("本地 SOCKS5 端口", default="1080")
+    local_port = int(local_port_str) if local_port_str.isdigit() else 1080
 
     # 认证方式
-    try:
-        key_input = input("SSH 密钥路径（默认 ~/.ssh/id_rsa，留空则密码认证）: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return
+    auth_idx = select_option(
+        "认证方式",
+        ["SSH 密钥", "密码认证"],
+        default=0,
+    )
+    auth_type = "key" if auth_idx == 0 else "password"
 
-    if key_input:
-        auth_type = "key"
-        key_path = key_input
+    if auth_type == "key":
+        key_path = input_text("SSH 密钥路径", default="~/.ssh/id_rsa")
     else:
-        auth_type = "password"
         key_path = ""
+
+    # 确认
+    divider()
+    panel("配置预览", [
+        f"服务器    {user}@{host}:{server_port}",
+        f"本地端口  {local_port}",
+        f"认证方式  {auth_type}" + (f" ({key_path})" if key_path else ""),
+    ])
+
+    confirm = select_option("确认保存？", ["是，保存配置", "否，取消"], default=0)
+    if confirm != 0:
+        print_warning("已取消")
+        return
 
     # 保存配置
     config = {
@@ -239,13 +237,15 @@ def _cmd_install() -> None:
     }
 
     save_config(CONFIG_PATH, config)
-    print()
-    print_success("配置已保存")
-    print(f"  服务器：{user}@{host}:{server_port}")
-    print(f"  本地端口：{local_port}")
-    print(f"  认证方式：{auth_type}")
-    print()
-    print_info("运行 autosocks start 启动代理")
+    divider()
+    panel("配置完成", [
+        "配置已保存到 " + str(CONFIG_PATH),
+        "",
+        "下一步：",
+        "  autosocks start    启动代理",
+        "  autosocks status   查看状态",
+        "  autosocks env      设置环境变量",
+    ])
 
 
 def _cmd_daemon() -> None:

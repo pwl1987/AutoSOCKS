@@ -123,23 +123,35 @@ class TestCliInstall:
 
     @patch("autosocks.cli.save_config")
     @patch("autosocks.cli.check_root", return_value=True)
-    def test_install_saves_config(self, mock_root, mock_save, capsys):
+    @patch("autosocks.cli.select_option", side_effect=[0, 0])  # key auth, confirm yes
+    @patch("autosocks.cli.input_text", side_effect=["root@1.2.3.4", "1080", "~/.ssh/id_rsa"])
+    @patch("autosocks.cli.panel")
+    @patch("autosocks.cli.divider")
+    def test_install_saves_config(self, mock_div, mock_panel, mock_input, mock_select, mock_root, mock_save):
         """install 保存配置"""
-        with patch("builtins.input", side_effect=["root@1.2.3.4", "1080", ""]):
-            with patch("sys.argv", ["autosocks", "install"]):
-                main()
+        main(["install"])
         mock_save.assert_called_once()
         config_arg = mock_save.call_args[0][1]
         assert config_arg["server_host"] == "1.2.3.4"
         assert config_arg["server_user"] == "root"
         assert config_arg["local_port"] == 1080
+        assert config_arg["auth_type"] == "key"
+
+    @patch("autosocks.cli.save_config")
+    @patch("autosocks.cli.check_root", return_value=True)
+    @patch("autosocks.cli.select_option", side_effect=[0, 1])  # key auth, confirm NO (cancel)
+    @patch("autosocks.cli.input_text", side_effect=["root@1.2.3.4", "1080", "~/.ssh/id_rsa"])
+    @patch("autosocks.cli.panel")
+    @patch("autosocks.cli.divider")
+    def test_install_cancel(self, mock_div, mock_panel, mock_input, mock_select, mock_root, mock_save):
+        """install 取消不保存"""
+        main(["install"])
+        mock_save.assert_not_called()
 
     @patch("autosocks.cli.check_root", return_value=False)
     def test_install_no_root(self, mock_root):
         """install 无 root 权限"""
-        with patch("sys.argv", ["autosocks", "install"]):
-            main()
-        # check_root 返回 False 时 _cmd_install 直接 return
+        main(["install"])
 
 
 class TestCliDaemon:
