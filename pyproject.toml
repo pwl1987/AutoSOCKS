@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autosocks"
+version = "2.0.0"
+description = "极简Linux代理工具"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+tui = ["textual>=0.40"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+autosocks = "autosocks.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
