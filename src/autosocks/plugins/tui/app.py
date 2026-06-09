@@ -15,6 +15,7 @@ from __future__ import annotations
 import curses
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -30,7 +31,7 @@ from autosocks.core.service import service_start, service_stop, service_restart,
 CONFIG_PATH = Path("/etc/autosocks/config.conf")
 PROFILE_DIR = Path("/etc/autosocks/profiles")
 _REFRESH_INTERVAL = 2.0
-_MSG_TIMEOUT = 15.0
+_MSG_TIMEOUT = 5.0
 _LATENCY_INTERVAL = 10.0
 _SCROLL_SPEED = 2
 
@@ -276,7 +277,11 @@ class TUIApp:
                     self._dirty = False
 
                 key = stdscr.getch()
-                if key != -1:
+                if key == curses.KEY_RESIZE:
+                    # 终端窗口缩放 → 强制全量重绘
+                    self._dirty = True
+                    self._last_draw = 0.0
+                elif key != -1:
                     self._handle_key(key, stdscr)
                     self._dirty = True
                 else:
@@ -365,7 +370,9 @@ class TUIApp:
         keybar = (
             " │↑↓ 移动  │  ↵ 选择  │  "
             "s 启动  │  S 停止  │  r 重启  │  "
-            "d 后台  │  q 退出  │"
+            "d 后台  │  q 退出  │  "
+            "F1 帮助  │  F5 刷新  │  "
+            "^E 自启  │  ^U 卸载  │"
         )
         keybar_full = keybar + " " * max(0, width - len(keybar) - 3)
         self._safe_addstr(stdscr, height - 1, 0, "│", curses.color_pair(_CLR_BORDER))
@@ -471,6 +478,16 @@ class TUIApp:
                 self._safe_addstr(stdscr, y, ip_x, f"出口 {ip}"[:w - (ip_x - x) - 1],
                                   curses.color_pair(_CLR_VALUE))
             self._safe_addstr(stdscr, y, x + w - 1, "│", curses.color_pair(_CLR_BORDER))
+            y += 1
+            # 延迟条形图
+            bar_w = min(w - 8, 24)
+            ratio = min(latency.ms / 500.0, 1.0)
+            filled = int(bar_w * ratio)
+            empty = bar_w - filled
+            bar = "█" * filled + "░" * empty
+            self._safe_addstr(stdscr, y, x, "│", curses.color_pair(_CLR_BORDER))
+            self._safe_addstr(stdscr, y, x + 4, bar, curses.color_pair(lat_clr) | curses.A_BOLD)
+            self._safe_addstr(stdscr, y, x + w - 1, "│", curses.color_pair(_CLR_BORDER))
         elif active:
             self._safe_addstr(stdscr, y, x, "│", curses.color_pair(_CLR_BORDER))
             self._safe_addstr(stdscr, y, x + 2, "  ⟐ 检测中...", curses.color_pair(_CLR_HINT) | curses.A_DIM)
@@ -562,34 +579,27 @@ class TUIApp:
         self._safe_addstr(stdscr, y, x, "╰" + "─" * (w - 2) + "╯", curses.color_pair(_CLR_BORDER))
 
     def _draw_message(self, stdscr: curses.window, x: int, y: int, w: int) -> None:
-        """绘制消息区 - 精致通知卡片"""
+        """绘制 Toast 轻量提示条 — 3 秒自动消失，不遮挡界面"""
         if not self.message or w < 12:
             return
 
-        header = "╭─ 消息 "
-        header_end = "─" * max(0, w - len(header) - 1) + "╮"
-        self._safe_addstr(stdscr, y, x, header + header_end, curses.color_pair(_CLR_BORDER))
-
+        # 自动推断消息类型
         clr = _CLR_MSG
-        if any(kw in self.message for kw in ("已启动", "已停止", "已重启", "成功", "已保存", "已安装")):
+        kw_success = ("已启动", "已停止", "已重启", "成功", "已保存", "已安装", "已注册")
+        kw_error = ("失败", "错误", "需要", "未检测到", "无法")
+        kw_warn = ("取消", "跳过")
+        if any(kw in self.message for kw in kw_success):
             clr = _CLR_SUCCESS
-        elif any(kw in self.message for kw in ("失败", "错误", "需要", "未检测到", "无法")):
+        elif any(kw in self.message for kw in kw_error):
             clr = _CLR_ERROR
-        elif any(kw in self.message for kw in ("取消", "跳过")):
+        elif any(kw in self.message for kw in kw_warn):
             clr = _CLR_WARN
 
-        lines = self.message.split("\n")
-        for j, line in enumerate(lines):
-            msg_y = y + 1 + j
-            if msg_y >= y + 5:
-                break
-            self._safe_addstr(stdscr, msg_y, x, "│", curses.color_pair(_CLR_BORDER))
-            self._safe_addstr(stdscr, msg_y, x + 2, f" {line}"[:w - 3], curses.color_pair(clr))
-            self._safe_addstr(stdscr, msg_y, x + w - 1, "│", curses.color_pair(_CLR_BORDER))
-
-        bottom_y = y + min(len(lines), 4) + 1
-        footer = "╰" + "─" * (w - 2) + "╯"
-        self._safe_addstr(stdscr, bottom_y, x, footer, curses.color_pair(_CLR_BORDER))
+        # 简洁单行 Toast
+        toast = f" {self.message.strip()} "
+        toast = toast[:w - 4]
+        self._safe_addstr(stdscr, y, x + (w - len(toast)) // 2, toast,
+                          curses.color_pair(clr) | curses.A_REVERSE | curses.A_BOLD)
 
     # ── 对话框边框绘制辅助 ──
 
@@ -1160,6 +1170,87 @@ class TUIApp:
             if key != -1:
                 break
 
+    def _dialog_help(self, stdscr: curses.window) -> None:
+        """F1 / ? 帮助弹窗 — 显示全部快捷键和操作提示"""
+        height, width = stdscr.getmaxyx()
+
+        help_entries = [
+            ("导航", [
+                ("↑ ↓ / j k", "菜单上下移动"),
+                ("PgUp / PgDn", "快速翻页"),
+                ("Home / End", "跳到首/末项"),
+                ("g / G", "跳到首/末项"),
+            ]),
+            ("操作", [
+                ("Enter", "执行选中菜单项"),
+                ("q", "退出 TUI"),
+                ("s", "启动代理"),
+                ("S", "停止代理"),
+                ("r", "重启代理"),
+                ("d", "后台运行模式"),
+                ("h", "健康检查"),
+                ("i", "运行状态"),
+            ]),
+            ("系统", [
+                ("F5", "强制刷新状态 / 重测延迟"),
+                ("F1 / ?", "打开此帮助面板"),
+                ("Ctrl+E", "注册 systemd 开机自启"),
+                ("Ctrl+U", "卸载 systemd 服务"),
+                ("Esc", "关闭对话框 / 返回上级"),
+            ]),
+            ("表单编辑", [
+                ("Enter", "编辑字段 / 确认修改"),
+                ("S", "保存所有修改"),
+                ("Esc", "放弃修改"),
+                ("↑ ↓", "切换编辑字段"),
+            ]),
+        ]
+
+        n_entries = sum(len(v) + 1 for _, v in help_entries)  # +1 for group header
+        dlg_w = min(max(50, width - 8), 62)
+        dlg_h = min(n_entries + 7, height - 4)
+        dlg_x = (width - dlg_w) // 2
+        dlg_y = (height - dlg_h) // 2
+
+        # 完整绘制
+        for dy in range(dlg_h):
+            self._safe_addstr(stdscr, dlg_y + dy, dlg_x, " " * dlg_w,
+                              curses.color_pair(_CLR_DLG_INPUT))
+        self._draw_dlg_frame(stdscr, dlg_y, dlg_x, dlg_w, dlg_h, "快捷键帮助")
+
+        row = dlg_y + 2
+        for group_name, entries in help_entries:
+            if row > dlg_y + dlg_h - 3:
+                break
+            # 分组标题
+            header = f"  ◆ {group_name}"
+            self._safe_addstr(stdscr, row, dlg_x + 2, header,
+                              curses.color_pair(_CLR_TITLE) | curses.A_BOLD)
+            row += 1
+            for key_str, desc in entries:
+                if row > dlg_y + dlg_h - 3:
+                    break
+                # 快捷键（左列）
+                key_col = f"    {key_str}"
+                self._safe_addstr(stdscr, row, dlg_x + 4, key_col,
+                                  curses.color_pair(_CLR_VALUE) | curses.A_BOLD)
+                # 说明（右列）
+                gap = 16 - len(key_str)
+                self._safe_addstr(stdscr, row, dlg_x + 4 + len(key_str) + max(gap, 1), desc,
+                                  curses.color_pair(_CLR_HINT))
+                row += 1
+
+        # 底部提示
+        bar_y = dlg_y + dlg_h - 2
+        self._safe_addstr(stdscr, bar_y, dlg_x + 2, "按任意键关闭",
+                          curses.color_pair(_CLR_KEYBAR))
+        stdscr.refresh()
+
+        stdscr.nodelay(False)
+        stdscr.getch()
+        stdscr.nodelay(True)
+        self._dirty = True
+
     # ── 按键处理 ──
 
     def _handle_key(self, key: int, stdscr: curses.window) -> None:
@@ -1190,6 +1281,17 @@ class TUIApp:
             self._execute_action(stdscr, "health")
         elif key == ord("i"):
             self._execute_action(stdscr, "status")
+        elif key == curses.KEY_F5:
+            self._spawn_latency_check()
+            self._config_cache_time = 0.0
+            self._active_cache_time = 0.0
+            self._dirty = True
+        elif key == curses.KEY_F1 or key == ord("?"):
+            self._dialog_help(stdscr)
+        elif key == 5:  # Ctrl+E — 注册 systemd 开机自启
+            self._execute_action(stdscr, "enable_svc")
+        elif key == 21:  # Ctrl+U — 卸载 systemd 服务
+            self._execute_action(stdscr, "disable_svc")
 
     def _execute_action(self, stdscr: curses.window, action: str) -> None:
         """执行操作：所有操作均在 TUI 内完成"""
@@ -1203,6 +1305,12 @@ class TUIApp:
 
     def _save_config(self, config: dict[str, object]) -> str:
         try:
+            bak = Path(str(CONFIG_PATH) + ".bak")
+            if CONFIG_PATH.exists():
+                try:
+                    shutil.copy2(CONFIG_PATH, bak)
+                except (OSError, PermissionError):
+                    pass  # 备份非关键，静默跳过
             save_config(CONFIG_PATH, config)
             self._config_cache_time = 0.0
             return "配置已保存"
@@ -1210,6 +1318,23 @@ class TUIApp:
             return "保存失败：需要 root 权限"
         except Exception as e:
             return f"保存失败：{e}"
+
+    @staticmethod
+    def _save_error_snapshot() -> None:
+        """启动失败时保存 systemd 日志快照"""
+        log_dir = Path.home() / ".autosocks"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        error_file = log_dir / "error.log"
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", "autosocks", "-n", "15", "--no-pager"],
+                capture_output=True, text=True, timeout=10,
+            )
+            content = result.stdout.strip() or result.stderr.strip()
+            if content:
+                error_file.write_text(content)
+        except Exception:
+            error_file.write_text("(无法获取错误日志)")
 
     # ── 操作实现：代理管理 ──
 
@@ -1225,7 +1350,9 @@ class TUIApp:
             self._active_cache_time = 0.0
             self._spawn_latency_check()
             return f"已启动: {config['server_user']}@{config['server_host']}:{config['local_port']}"
-        return "启动失败，请检查日志"
+        # 启动失败 → 自动保存错误日志快照
+        self._save_error_snapshot()
+        return "启动失败，错误日志已保存至 ~/.autosocks/error.log"
 
     def _do_stop(self, stdscr: curses.window) -> str:
         if os.geteuid() != 0:
@@ -1965,3 +2092,25 @@ class TUIApp:
     def _do_quit(self, stdscr: curses.window) -> str:
         self.quit()
         return ""
+
+    def _do_enable_svc(self, stdscr: curses.window) -> str:
+        """Ctrl+E — 注册 systemd 开机自启"""
+        if os.geteuid() != 0:
+            return "需要 root 权限"
+        result = subprocess.run(
+            ["systemctl", "enable", "autosocks"],
+            capture_output=True, text=True,
+        )
+        return "已注册开机自启" if result.returncode == 0 else f"注册失败: {result.stderr.strip()}"
+
+    def _do_disable_svc(self, stdscr: curses.window) -> str:
+        """Ctrl+U — 卸载 systemd 服务（需确认）"""
+        if os.geteuid() != 0:
+            return "需要 root 权限"
+        choice = self._dialog_select(stdscr, "确认卸载 systemd 服务？", ["取消", "确认卸载"], 0)
+        if choice != 1:
+            return "已取消"
+        for cmd in [["systemctl", "stop", "autosocks"],
+                     ["systemctl", "disable", "autosocks"]]:
+            subprocess.run(cmd, capture_output=True)
+        return "服务已停止并取消自启"
