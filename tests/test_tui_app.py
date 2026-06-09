@@ -16,12 +16,18 @@ class TestMenuItem:
     def test_menu_items_default(self):
         """默认菜单项"""
         items = TUIApp.default_menu_items()
-        assert len(items) >= 5
+        assert len(items) == 11
         labels = [i.label for i in items]
         assert "启动代理" in labels
         assert "停止代理" in labels
+        assert "重启代理" in labels
         assert "查看状态" in labels
+        assert "健康检查" in labels
         assert "配置服务器" in labels
+        assert "HTTP 代理" in labels
+        assert "环境变量" in labels
+        assert "Shell 集成" in labels
+        assert "检查更新" in labels
         assert "退出" in labels
 
 
@@ -81,3 +87,43 @@ class TestTUIApp:
         app = TUIApp()
         app.run()
         mock_wrapper.assert_called_once_with(app._main_loop)
+
+    @patch("autosocks.plugins.tui.app.service_is_active", return_value=True)
+    @patch("autosocks.plugins.tui.app.load_config")
+    def test_execute_action_status(self, mock_load, mock_active):
+        """execute_action 调用 status"""
+        mock_load.return_value = {
+            "server_user": "root",
+            "server_host": "1.2.3.4",
+            "local_port": 1080,
+            "local_bind": "127.0.0.1",
+        }
+        app = TUIApp()
+        app.selected = 3  # 查看状态
+        app.execute_action("status")
+        assert "运行中" in app.message
+
+    @patch("autosocks.plugins.tui.app.service_is_active", return_value=False)
+    def test_execute_action_health_not_running(self, mock_active):
+        """健康检查 - 服务未运行"""
+        app = TUIApp()
+        app.execute_action("health")
+        assert "未运行" in app.message
+
+    @patch("autosocks.plugins.tui.app.load_config")
+    def test_execute_action_env(self, mock_load):
+        """环境变量显示"""
+        mock_load.return_value = {
+            "local_bind": "127.0.0.1",
+            "local_port": 1080,
+        }
+        app = TUIApp()
+        app.execute_action("env")
+        assert "socks5://" in app.message
+
+    @patch("autosocks.plugins.tui.app.service_is_active", return_value=False)
+    def test_execute_action_http_proxy_not_running(self, mock_active):
+        """HTTP 代理 - 服务未运行"""
+        app = TUIApp()
+        app.execute_action("http_proxy")
+        assert "未运行" in app.message
