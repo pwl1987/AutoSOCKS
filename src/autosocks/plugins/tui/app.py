@@ -1433,35 +1433,201 @@ class TUIApp:
         return "启动失败"
 
     def _do_env(self, stdscr: curses.window) -> str:
+        """环境变量管理 — 在 TUI 内安装/卸载代理环境变量"""
         config = self._get_config()
         bind = str(config.get('local_bind', '127.0.0.1'))
         port = int(str(config.get('local_port', 1080)))
-        proxy = f"socks5://{bind}:{port}"
-        self._dialog_message(stdscr, "环境变量", [
-            "在 shell 中执行：",
-            '  eval "$(autosocks env)"',
-            "",
-            f"代理地址：{proxy}",
-            f"  http_proxy={proxy}",
-            f"  ALL_PROXY={proxy}",
-        ])
-        return ""
+        proxy_url = f"socks5://{bind}:{port}"
+        active = self._get_active()
+
+        height, width = stdscr.getmaxyx()
+        dlg_w = min(58, width - 4)
+        dlg_h = min(22, height - 4)
+        dlg_x = (width - dlg_w) // 2
+        dlg_y = (height - dlg_h) // 2
+
+        # 默认选中项
+        defaults = {
+            "http_proxy": True, "https_proxy": True, "HTTP_PROXY": True, "HTTPS_PROXY": True,
+            "all_proxy": True, "ALL_PROXY": True, "no_proxy": True, "NO_PROXY": True,
+            "socks_proxy": True, "SOCKS_PROXY": True, "ftp_proxy": True, "FTP_PROXY": True,
+        }
+        no_proxy_hosts = "localhost,127.0.0.1,::1"
+        script_path = Path.home() / ".autosocks.sh"
+        integration_installed = script_path.exists()
+        selected_row = 0
+
+        # 可滚动的勾选项列表
+        checkbox_items = list(defaults.keys())
+        n_checkboxes = len(checkbox_items)
+
+        def _draw_panel(keys_hint: str = "") -> None:
+            # 清空面板区域
+            for dy in range(dlg_h):
+                self._safe_addstr(stdscr, dlg_y + dy, dlg_x, " " * dlg_w,
+                                  curses.color_pair(_CLR_DLG_INPUT))
+            self._draw_dlg_frame(stdscr, dlg_y, dlg_x, dlg_w, dlg_h, "环境变量管理")
+
+            row = dlg_y + 2
+            # 服务状态
+            svc_status = "● 代理运行中" if active else "○ 代理未启动"
+            svc_clr = _CLR_RUNNING if active else _CLR_STOPPED
+            self._safe_addstr(stdscr, row, dlg_x + 2, "状态:  ", curses.color_pair(_CLR_HINT))
+            self._safe_addstr(stdscr, row, dlg_x + 8, svc_status, curses.color_pair(svc_clr) | curses.A_BOLD)
+            row += 1
+
+            # 代理地址
+            self._safe_addstr(stdscr, row, dlg_x + 2, f"地址:  {proxy_url}",
+                              curses.color_pair(_CLR_VALUE) | curses.A_BOLD)
+            row += 1
+
+            # 分隔线
+            self._safe_addstr(stdscr, row, dlg_x + 3, "─" * (dlg_w - 8),
+                              curses.color_pair(_CLR_BORDER))
+            row += 1
+
+            # 勾选项（支持滚动）
+            visible_start = max(0, selected_row - (dlg_h - row - 7))
+            visible_end = min(n_checkboxes, visible_start + (dlg_h - row - 7))
+            for idx in range(visible_start, visible_end):
+                k = checkbox_items[idx]
+                checked = defaults[k]
+                cursor = "▸" if idx == selected_row else " "
+                mark = "✓" if checked else " "
+                self._safe_addstr(stdscr, row, dlg_x + 3, f"{cursor}",
+                                  curses.color_pair(_CLR_TITLE) | curses.A_BOLD)
+                self._safe_addstr(stdscr, row, dlg_x + 5, f"[{mark}]",
+                                  curses.color_pair(_CLR_SUCCESS if checked else _CLR_DIM) | curses.A_BOLD)
+                self._safe_addstr(stdscr, row, dlg_x + 9, f"{k}={proxy_url}",
+                                  curses.color_pair(_CLR_VALUE))
+                row += 1
+
+            # 留空一行
+            row += 1
+
+            # no_proxy 自定义
+            self._safe_addstr(stdscr, row, dlg_x + 2, "no_proxy 忽略:",
+                              curses.color_pair(_CLR_HINT))
+            self._safe_addstr(stdscr, row, dlg_x + 18, no_proxy_hosts,
+                              curses.color_pair(_CLR_VALUE) | curses.A_BOLD)
+            row += 1
+
+            # Shell 集成状态
+            int_status = "已安装 ✓" if integration_installed else "未安装"
+            self._safe_addstr(stdscr, row, dlg_x + 2, f"Shell 集成: {int_status}",
+                              curses.color_pair(_CLR_HINT))
+            row += 1
+
+            # 底部按键栏
+            bar_y = dlg_y + dlg_h - 2
+            keys = "  ←/→/↑/↓ 移动    Space 切换    E 安装    U 卸载    Esc 关闭"
+            if keys_hint:
+                keys = keys_hint
+            self._safe_addstr(stdscr, bar_y, dlg_x + 2, keys[:dlg_w - 4],
+                              curses.color_pair(_CLR_KEYBAR))
+
+        stdscr.nodelay(False)
+        result: str | None = None
+        scroll_offset = 0
+        while True:
+            _draw_panel()
+            stdscr.refresh()
+            key = stdscr.getch()
+
+            if key == 27:  # Esc
+                result = "已关闭"
+                break
+            elif key == ord("q"):
+                result = "已关闭"
+                break
+            elif key in (curses.KEY_UP, ord("k")):
+                if selected_row > 0:
+                    selected_row -= 1
+                elif scroll_offset > 0:
+                    scroll_offset -= 1
+                    selected_row = scroll_offset
+            elif key in (curses.KEY_DOWN, ord("j")):
+                if selected_row < n_checkboxes - 1:
+                    selected_row += 1
+                elif scroll_offset < n_checkboxes - (dlg_h - dlg_y - 8):
+                    scroll_offset += 1
+                    selected_row = scroll_offset + (dlg_h - dlg_y - 8) - 1
+            elif key == ord(" "):  # 切换选中
+                k = checkbox_items[selected_row]
+                defaults[k] = not defaults[k]
+            elif key in (ord("e"), ord("E")):  # 安装
+                result = self._env_install(defaults, no_proxy_hosts, bind, port, script_path)
+                break
+            elif key in (ord("u"), ord("U")):  # 卸载
+                result = self._env_uninstall(script_path)
+                break
+            elif key == curses.KEY_RESIZE:
+                height, width = stdscr.getmaxyx()
+                dlg_w = min(58, width - 4)
+                dlg_h = min(22, height - 4)
+                dlg_x = (width - dlg_w) // 2
+                dlg_y = (height - dlg_h) // 2
+
+        stdscr.nodelay(True)
+        self._dirty = True
+        return result or "已关闭"
+
+    def _env_install(self, toggles: dict[str, bool], no_proxy_hosts: str,
+                     bind: str, port: int, script_path: Path) -> str:
+        """生成并安装 Shell 环境变量脚本"""
+        proxy_url = f"socks5://{bind}:{port}"
+        lines: list[str] = ["# AutoSOCKS 代理环境变量 (TUI 管理)", ""]
+        for var, enabled in toggles.items():
+            if enabled:
+                if var in ("no_proxy", "NO_PROXY"):
+                    lines.append(f'export {var}="{no_proxy_hosts}"')
+                else:
+                    lines.append(f'export {var}="{proxy_url}"')
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("\n".join(lines) + "\n")
+        # 添加到 bashrc（若未添加）
+        bashrc = Path.home() / ".bashrc"
+        source_line = f'source "{script_path}" 2>/dev/null'
+        if bashrc.exists() and source_line not in bashrc.read_text():
+            with bashrc.open("a") as f:
+                f.write(f"\n# AutoSOCKS\n{source_line}\n")
+        return "Shell 集成已安装\n可执行 source ~/.autosocks.sh 立即生效"
+
+    def _env_uninstall(self, script_path: Path) -> str:
+        """卸载 Shell 环境变量脚本"""
+        if script_path.exists():
+            script_path.unlink()
+        bashrc = Path.home() / ".bashrc"
+        if bashrc.exists():
+            content = bashrc.read_text()
+            if "AutoSOCKS" in content:
+                new_content = "\n".join(
+                    line for line in content.split("\n")
+                    if 'AutoSOCKS' not in line and '.autosocks.sh' not in line
+                )
+                bashrc.write_text(new_content)
+        return "Shell 集成已卸载"
 
     def _do_shell_integration(self, stdscr: curses.window) -> str:
-        from autosocks.plugins.shell_integration import install_integration, uninstall_integration
+        """Shell 集成 — 快速安装/卸载代理环境变量"""
         script_path = Path.home() / ".autosocks.sh"
+        installed = script_path.exists()
+        idx = self._dialog_select(stdscr, "Shell 集成",
+                                  ["安装环境变量", "卸载环境变量"], 0 if not installed else 1)
+        if idx is None or idx < 0:
+            return ""
         config = self._get_config()
+        bind = str(config.get('local_bind', '127.0.0.1'))
         port = int(str(config.get('local_port', 1080)))
-
-        idx = self._dialog_select(stdscr, "Shell 集成", ["安装到 ~/.autosocks.sh", "卸载"], 0)
-        if idx is None:
-            return "已取消"
+        toggles = {
+            "http_proxy": True, "https_proxy": True, "HTTP_PROXY": True, "HTTPS_PROXY": True,
+            "all_proxy": True, "ALL_PROXY": True, "no_proxy": True, "NO_PROXY": True,
+            "socks_proxy": True, "SOCKS_PROXY": True, "ftp_proxy": True, "FTP_PROXY": True,
+        }
         if idx == 0:
-            install_integration(script_path, port)
-            return f"已安装 Shell 集成\n添加到 ~/.bashrc:\n  source {script_path}"
+            return self._env_install(toggles, "localhost,127.0.0.1,::1", bind, port, script_path)
         else:
-            uninstall_integration(script_path)
-            return "已卸载 Shell 集成"
+            return self._env_uninstall(script_path)
 
     # ── 操作实现：配置编辑 ──
 

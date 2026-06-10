@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from typing import Optional
 
+from autosocks.core.dns import resolve_remote
+
 
 def build_ssh_command(config: dict[str, object]) -> list[str]:
     """构建 SSH SOCKS5 隧道命令行。
@@ -57,17 +59,30 @@ def build_ssh_command(config: dict[str, object]) -> list[str]:
 def check_proxy(port: int) -> bool:
     """检查 SOCKS5 代理是否可用。
 
-    Args:
-        port: 本地 SOCKS5 端口
-
-    Returns:
-        True 可用，False 不可用
+    优先使用 DoH 远端解析（绕过 DNS 污染），再走 --resolve 传真实 IP。
     """
     try:
+        # 1. 尝试远端解析 + --resolve（绕过 DNS 污染）
+        ip = resolve_remote("cp.cloudflare.com", proxy_port=port)
+        if ip:
+            result = subprocess.run(
+                [
+                    "curl", "-s",
+                    "--socks5-hostname", f"127.0.0.1:{port}",
+                    "--resolve", f"cp.cloudflare.com:443:{ip}",
+                    "--max-time", "5",
+                    "https://cp.cloudflare.com",
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return True
+
+        # 2. 回退：直连 socks5-hostname（让远端 DNS 解析）
         result = subprocess.run(
             [
                 "curl", "-s",
-                "--socks5", f"127.0.0.1:{port}",
+                "--socks5-hostname", f"127.0.0.1:{port}",
                 "--max-time", "5",
                 "https://cp.cloudflare.com",
             ],
@@ -81,17 +96,30 @@ def check_proxy(port: int) -> bool:
 def get_exit_ip(port: int) -> Optional[str]:
     """通过 SOCKS5 代理获取出口 IP。
 
-    Args:
-        port: 本地 SOCKS5 端口
-
-    Returns:
-        出口 IP 字符串，失败返回 None
+    优先使用 DoH 远端解析 ifconfig.me（绕过 DNS 污染）。
     """
     try:
+        # 1. DoH 预解析 + --resolve
+        ip = resolve_remote("ifconfig.me", proxy_port=port)
+        if ip:
+            result = subprocess.run(
+                [
+                    "curl", "-s",
+                    "--socks5-hostname", f"127.0.0.1:{port}",
+                    "--resolve", f"ifconfig.me:443:{ip}",
+                    "--max-time", "10",
+                    "https://ifconfig.me",
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+
+        # 2. 回退：直连 socks5-hostname
         result = subprocess.run(
             [
                 "curl", "-s",
-                "--socks5", f"127.0.0.1:{port}",
+                "--socks5-hostname", f"127.0.0.1:{port}",
                 "--max-time", "10",
                 "https://ifconfig.me",
             ],

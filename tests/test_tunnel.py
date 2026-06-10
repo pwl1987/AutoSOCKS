@@ -92,14 +92,26 @@ class TestBuildSshCommand:
 class TestCheckProxy:
     """测试代理连通性检测"""
 
+    @patch("autosocks.core.tunnel.resolve_remote", return_value="1.2.3.4")
     @patch("autosocks.core.tunnel.subprocess.run")
-    def test_proxy_working(self, mock_run):
-        """代理连通"""
-        mock_run.return_value = MagicMock(returncode=0, stdout="1.2.3.4\n")
+    def test_proxy_working_doh(self, mock_run, mock_resolve):
+        """DoH 解析成功 → 走 --resolve 路径"""
+        mock_run.return_value = MagicMock(returncode=0)
+        assert check_proxy(1080) is True
+        # 第一次调用的 curl 命令应包含 --resolve
+        first_cmd = mock_run.call_args_list[0][0][0]
+        assert "--resolve" in first_cmd
+
+    @patch("autosocks.core.tunnel.resolve_remote", return_value=None)
+    @patch("autosocks.core.tunnel.subprocess.run")
+    def test_proxy_working_fallback(self, mock_run, mock_resolve):
+        """DoH 失败 → 回退 socks5-hostname"""
+        mock_run.return_value = MagicMock(returncode=0)
         assert check_proxy(1080) is True
 
+    @patch("autosocks.core.tunnel.resolve_remote", return_value=None)
     @patch("autosocks.core.tunnel.subprocess.run")
-    def test_proxy_not_working(self, mock_run):
+    def test_proxy_not_working(self, mock_run, mock_resolve):
         """代理不通"""
         mock_run.return_value = MagicMock(returncode=1)
         assert check_proxy(1080) is False
@@ -108,15 +120,27 @@ class TestCheckProxy:
 class TestGetExitIp:
     """测试获取出口 IP"""
 
+    @patch("autosocks.core.tunnel.resolve_remote", return_value="5.6.7.8")
     @patch("autosocks.core.tunnel.subprocess.run")
-    def test_get_ip_success(self, mock_run):
-        """成功获取出口 IP"""
+    def test_get_ip_doh(self, mock_run, mock_resolve):
+        """DoH 解析成功 → 走 --resolve 路径"""
+        mock_run.return_value = MagicMock(returncode=0, stdout="203.0.113.50\n")
+        ip = get_exit_ip(1080)
+        assert ip == "203.0.113.50"
+        first_cmd = mock_run.call_args_list[0][0][0]
+        assert "--resolve" in first_cmd
+
+    @patch("autosocks.core.tunnel.resolve_remote", return_value=None)
+    @patch("autosocks.core.tunnel.subprocess.run")
+    def test_get_ip_fallback(self, mock_run, mock_resolve):
+        """DoH 失败 → 回退 socks5-hostname"""
         mock_run.return_value = MagicMock(returncode=0, stdout="203.0.113.50\n")
         ip = get_exit_ip(1080)
         assert ip == "203.0.113.50"
 
+    @patch("autosocks.core.tunnel.resolve_remote", return_value=None)
     @patch("autosocks.core.tunnel.subprocess.run")
-    def test_get_ip_failure(self, mock_run):
+    def test_get_ip_failure(self, mock_run, mock_resolve):
         """获取出口 IP 失败"""
         mock_run.return_value = MagicMock(returncode=1, stderr="Connection refused")
         ip = get_exit_ip(1080)

@@ -1,4 +1,4 @@
-# AutoSOCKS v2.0.0
+# AutoSOCKS v2.1.0
 
 极简 Linux SSH SOCKS5 代理管理工具，Python 重写版。
 
@@ -7,7 +7,8 @@
 - **一行安装**：`curl | bash` 安装体验，自动检测 Python 环境
 - **本地安装**：`--local` 从本地源码安装，无需网络
 - **交互式配置**：`autosocks install` TUI 向导式配置服务器
-- **TUI 界面**：`autosocks tui` 双栏布局全屏 curses 交互界面
+- **TUI 界面**：`autosocks tui` 双栏布局全屏 curses 交互界面（6 组 28 项菜单）
+- **实时状态面板**：运行状态、出口 IP、延迟条形图可视化
 - **后台运行**：TUI 关闭后代理服务持续运行（systemd 管理）
 - **SOCKS5 代理**：基于 SSH `-D` 动态端口转发
 - **HTTP 代理**：支持 gost SOCKS5→HTTP 转换（可选 Privoxy）
@@ -18,6 +19,11 @@
 - **Webhook 告警**：JSON POST 推送到外部服务
 - **Shell 集成**：`eval $(autosocks env)` 自动设置代理环境变量
 - **自更新**：检查 GitHub 最新版本，一键升级
+- **配置自动备份**：每次保存自动创建 `.bak` 备份文件
+- **错误日志快照**：启动失败时自动保存 `journalctl` 日志至 `~/.autosocks/error.log`
+- **窗口缩放自适应**：终端尺寸变化时 TUI 自动重新布局（SIGWINCH）
+- **一键 systemd 管理**：`Ctrl+E` 注册开机自启，`Ctrl+U` 卸载服务
+- **Toast 提示**：操作反馈以简洁反色提示条呈现，5 秒自动消失
 - **零依赖**：纯 Python 标准库，无第三方运行时依赖
 
 ## 快速开始
@@ -98,7 +104,7 @@ sudo autosocks install
 5. 配置心跳间隔、连接超时
 6. 配置自动重连
 7. 配置日志
-8. 预览配置，确认保存
+8. 预览配置，确认保存（保存时自动创建 `.bak` 备份）
 
 #### `autosocks start`
 
@@ -109,6 +115,7 @@ sudo autosocks start
 ```
 
 前提：已通过 `autosocks install` 完成配置。
+启动失败时自动将最近 15 行 `journalctl` 日志保存至 `~/.autosocks/error.log`。
 
 #### `autosocks stop`
 
@@ -156,7 +163,7 @@ eval "$(autosocks env unset)"
 
 #### `autosocks tui`
 
-启动全屏 TUI 交互界面（curses 双栏布局）。
+启动全屏 TUI 交互界面（curses 双栏布局），支持终端窗口缩放自适应。
 
 ```bash
 sudo autosocks tui
@@ -169,7 +176,7 @@ sudo autosocks tui
 | 快捷键 | 功能 |
 |--------|------|
 | `↑/↓` 或 `j/k` | 移动选择 |
-| `Enter` | 执行操作 |
+| `Enter` | 执行选中菜单项 |
 | `PgUp/PgDn` | 翻页 |
 | `s` | 启动代理 |
 | `S` | 停止代理 |
@@ -177,26 +184,30 @@ sudo autosocks tui
 | `i` | 查看状态 |
 | `h` | 健康检查 |
 | `d` | 后台运行（关闭 TUI，代理继续运行） |
-| `q` | 退出 |
+| `q` | 退出 TUI |
+| `F1` / `?` | 快捷键帮助弹窗 |
+| `F5` | 强制刷新状态 + 重测延迟 |
+| `Ctrl+E` | 注册 systemd 开机自启 |
+| `Ctrl+U` | 卸载 systemd 服务（需确认） |
 
-**菜单分组（6 组 27 项）**：
+**菜单分组（6 组 28 项）**：
 
 | 分组 | 菜单项 |
 |------|--------|
 | 代理管理 | 启动/停止/重启代理、运行状态、健康检查、延迟测试 |
 | 代理工具 | HTTP 代理转发、环境变量、Shell 集成 |
-| 配置编辑 | 配置向导、服务器/本地端口/认证/SSH 参数/重连/日志/Webhook 告警/GeoIP 分流 |
+| 配置编辑 | 配置向导、快速上手、服务器/本地端口/认证/SSH 参数/重连/日志/Webhook 告警/GeoIP 分流 |
 | Profile | 查看/创建/切换/删除 Profile |
 | 系统工具 | 查看完整配置、查看日志、检查更新、后台运行 |
 | 退出 | 退出 TUI |
 
 **右侧状态面板实时显示**：
 - 服务运行状态（运行中/已停止）
-- 延迟（ms）和出口 IP（异步后台检测）
+- 延迟（ms）+ 条形图可视化（██░░ 占比），出口 IP（异步后台检测）
 - 服务器信息、SSH 端口、本地监听地址
 - 认证方式、心跳/超时参数、重连状态
 - SOCKS5/HTTP 代理地址
-- 操作结果消息（成功/失败/警告，自动超时清除）
+- Toast 操作结果提示（成功/失败/警告，5 秒自动消失）
 
 **后台运行**：
 - 按 `d` 一键切换后台模式，TUI 关闭后代理服务持续运行
@@ -246,7 +257,7 @@ sudo bash install.sh --uninstall
 
 ### 配置文件
 
-配置文件位于 `/etc/autosocks/config.conf`（INI 格式）：
+配置文件位于 `/etc/autosocks/config.conf`（INI 格式），每次保存自动在 `/etc/autosocks/config.conf.bak` 创建备份：
 
 ```ini
 [server]
@@ -354,7 +365,6 @@ install.sh                      # Bash 安装/卸载器
 - Linux（支持 systemd）
 - Python 3.10+
 - SSH 客户端
-- curl（远程安装时需要）
 
 ### 可选依赖
 
@@ -369,12 +379,12 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 运行测试（158 tests）
+# 运行测试（184 tests）
 pytest tests/ -v
 
 # 代码检查
 ruff check src/ tests/
-mypy src/ --ignore-missing-imports
+mypy src/
 ```
 
 ## 从 v1.0.0 迁移

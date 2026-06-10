@@ -1,5 +1,6 @@
 """tui/app.py 测试 - curses TUI 主界面"""
 import time
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import curses as _curses
@@ -200,7 +201,7 @@ class TestTUIApp:
     @patch("autosocks.plugins.tui.app.service_is_active", return_value=True)
     @patch("autosocks.plugins.tui.app.load_config")
     def test_execute_action_env(self, mock_load, mock_active):
-        """环境变量显示（弹出对话框）"""
+        """环境变量面板（勾选 + 安装/卸载）"""
         _mock_curses()
         mock_load.return_value = {
             "local_bind": "127.0.0.1",
@@ -209,10 +210,10 @@ class TestTUIApp:
         app = TUIApp()
         mock_stdscr = MagicMock()
         mock_stdscr.getmaxyx.return_value = (24, 80)
-        mock_stdscr.getch.return_value = ord("q")  # 关闭对话框
+        mock_stdscr.getch.side_effect = [27]  # Esc 关闭
         app._execute_action(mock_stdscr, "env")
-        # env 弹出对话框，返回空字符串
-        assert app.message == ""
+        # env 面板返回关闭消息或安装/卸载结果
+        assert app.message is not None and len(app.message) > 0
 
     def test_message_timeout(self):
         """消息超时自动清除"""
@@ -645,3 +646,52 @@ class TestWindowResize:
         app.running = False  # 阻止事件循环
         # 不应抛出异常
         app._handle_key(_curses.KEY_RESIZE, MagicMock())
+
+
+class TestEnvPanel:
+    """测试环境变量管理面板"""
+
+    def test_env_install_creates_script(self):
+        """_env_install 生成脚本文件"""
+        import tempfile
+        _mock_curses()
+        app = TUIApp()
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / ".autosocks.sh"
+            toggles = {"http_proxy": True, "https_proxy": False, "no_proxy": True}
+            app._env_install(toggles, "localhost,127.0.0.1", "127.0.0.1", 1080, script)
+            assert script.exists()
+            content = script.read_text()
+            assert "http_proxy" in content
+            assert "https_proxy" not in content  # 未勾选
+            assert "no_proxy" in content
+
+    def test_env_uninstall_removes_script(self):
+        """_env_uninstall 删除脚本"""
+        import tempfile
+        _mock_curses()
+        app = TUIApp()
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / ".autosocks.sh"
+            script.write_text("# test")
+            app._env_uninstall(script)
+            assert not script.exists()
+
+    def test_env_install_all_vars(self):
+        """_env_install 全选时包含所有变量"""
+        import tempfile
+        _mock_curses()
+        app = TUIApp()
+        toggles = {
+            "http_proxy": True, "https_proxy": True,
+            "HTTP_PROXY": True, "HTTPS_PROXY": True,
+            "all_proxy": True, "ALL_PROXY": True,
+            "no_proxy": True, "NO_PROXY": True,
+            "socks_proxy": True, "SOCKS_PROXY": True,
+            "ftp_proxy": True, "FTP_PROXY": True,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / ".autosocks.sh"
+            app._env_install(toggles, "localhost", "127.0.0.1", 1080, script)
+            content = script.read_text()
+            assert content.count("export ") == 12
