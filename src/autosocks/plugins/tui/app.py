@@ -1437,7 +1437,7 @@ class TUIApp:
         config = self._get_config()
         bind = str(config.get('local_bind', '127.0.0.1'))
         port = int(str(config.get('local_port', 1080)))
-        proxy_url = f"socks5://{bind}:{port}"
+        proxy_url = f"socks5h://{bind}:{port}"
         active = self._get_active()
 
         height, width = stdscr.getmaxyx()
@@ -1575,7 +1575,7 @@ class TUIApp:
     def _env_install(self, toggles: dict[str, bool], no_proxy_hosts: str,
                      bind: str, port: int, script_path: Path) -> str:
         """生成并安装 Shell 环境变量脚本"""
-        proxy_url = f"socks5://{bind}:{port}"
+        proxy_url = f"socks5h://{bind}:{port}"
         lines: list[str] = ["# AutoSOCKS 代理环境变量 (TUI 管理)", ""]
         for var, enabled in toggles.items():
             if enabled:

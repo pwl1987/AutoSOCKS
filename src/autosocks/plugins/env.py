@@ -11,7 +11,7 @@ def env_set(bind: str, port: int) -> None:
         bind: 绑定地址
         port: SOCKS5 端口
     """
-    proxy_url = f"socks5://{bind}:{port}"
+    proxy_url = f"socks5h://{bind}:{port}"
     no_proxy = "localhost,127.0.0.1,::1"
 
     print(f'export http_proxy="{proxy_url}"')
