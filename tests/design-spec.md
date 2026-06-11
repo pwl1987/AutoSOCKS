@@ -2,7 +2,7 @@
 
 > **项目名称**：media-platform（临沂融媒体中心）
 > **日期**：2026-06-11
-> **版本**：v2.0（最终锁定版）
+> **版本**：v2.1（最终锁定版）
 > **团队**：1-2 人，全程 AI 辅助开发
 
 ---
@@ -349,7 +349,7 @@ from pydantic import BaseModel
 
 T = TypeVar("T")
 
-class Response(BaseModel):
+class ApiResponse(BaseModel):
     """统一响应格式"""
     code: int = 0
     message: str = "success"
@@ -602,14 +602,18 @@ class AdminAuth(AuthenticationBackend):
 ModelView 的 `on_model_change` 等钩子**只做同步校验**，需要异步操作时发 Celery 任务：
 
 ```python
+from typing import Any
 from sqladmin.exceptions import ValidationError
 
 class ContentAdmin(ModelView, model=Content):
-    async def on_model_change(self, data, model, is_created):
-        # 只做同步校验
-        if not model.title:
+    async def on_model_change(self, data: dict, model: Any, is_created: bool, request: Request) -> None:
+        """创建/更新前的处理（仅做字段校验，不要发 Celery 任务）"""
+        if hasattr(model, 'title') and not data.get('title'):
             raise ValidationError("标题不能为空")
-        # 异步工作交给 Celery
+
+    async def after_model_change(self, data: dict, model: Any, is_created: bool, request: Request) -> None:
+        """创建/更新提交成功后（此处可安全触发 Celery 任务）"""
+        # 异步工作交给 Celery（仅在提交成功后触发）
         dispatch("tasks.sync.dispatch_content", content_id=model.id)
 ```
 
@@ -641,6 +645,17 @@ CREATE INDEX idx_media_segment_embedding ON media_segment
 查询时 `ef_search` 策略：默认 80（平衡），高召回检索 150，批量标注可降低至 40。
 
 ### 6.8 存储层（S3 兼容）
+
+#### 6.8.1 存储 Key 规范
+
+```
+original/{site_id}/{asset_uuid}/source.mp4
+proxy/{site_id}/{asset_uuid}/720p.mp4
+thumb/{site_id}/{asset_uuid}/cover.jpg
+subtitle/{site_id}/{asset_uuid}/zh-CN.srt
+ai/{site_id}/{asset_uuid}/ocr.json
+backup/{date}/db.dump
+```
 
 使用 `aiobotocore` 统一 S3 客户端，开发用 MinIO，生产可无缝切换任意 S3 兼容存储（阿里云 OSS/华为云 OBS/Ceph），国产化零改动：
 
@@ -855,9 +870,18 @@ volumes:
   miniodata:
 ```
 
+  **Docker Compose 分阶段部署说明**：
+
+  | 阶段 | 包含服务 | 说明 |
+  |------|---------|------|
+  | **Phase 0** | api, postgres, redis, minio, celery_worker(cpu+io), celery_beat, flower | 开发骨架 |
+  | **Phase 1** | + nginx, ai_server, celery_worker_gpu | AI 能力 + 反向代理 |
+  | **Phase 2** | + srs, frontend | 直播 + 前端 |
+
 GPU 覆盖（`docker-compose.gpu.yml`）：
 
 ```yaml
+# Phase 0 核心（开发启动必须）
 services:
   celery_worker:
     deploy:
@@ -1078,3 +1102,4 @@ httpx>=0.27
 | 2026-06-11 | v1.9 | site_id nullable=False / 种子数据脚本(init_seed.py) / 核心依赖清单(requirements.txt) / 最终锁定版 |
 | 2026-06-11 | v2.0 | **[Bug修复]** UUID default 必须用 lambda+str() / 软删除与CASCADE冲突说明+业务层级联 / MinIO CORS配置(前端直传必需) / 内容状态机强制校验(VALID_TRANSITIONS) / 孤儿文件清理(先MinIO后DB) / 转码产物关联(source_media_asset_id) |
 | 2026-06-11 | v2.0.1 | Flower 监控服务(docker-compose, :5555) |
+| 2026-06-11 | v2.1 | SQLAdmin hook 签名修正(+request参数) / on_model_change仅校验,after_model_change触发任务 / 存储Key规范(original/proxy/thumb/subtitle/ai/backup) / ApiResponse重命名(避免与FastAPI Response冲突) / Docker Compose分阶段说明(P0/P1/P2) |
