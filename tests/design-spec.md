@@ -2,7 +2,7 @@
 
 > **项目名称**：media-platform（临沂融媒体中心）
 > **日期**：2026-06-11
-> **版本**：v2.1（最终锁定版）
+> **版本**：v2.2（P0 开发锁定版）
 > **团队**：1-2 人，全程 AI 辅助开发
 
 ---
@@ -477,6 +477,13 @@ celery_app.conf.update(
     task_track_started=True,             # 跟踪任务开始状态
 )
 
+# ⚠️ 幂等性硬规则（P0 必须遵守）
+# task_acks_late + task_reject_on_worker_lost 意味着任务可能被重复执行。
+# 所有 Celery 任务必须先检查目标状态：
+#   - 已完成则直接 return
+#   - 正在处理则跳过或拒绝重复执行
+#   - 失败重试必须覆盖旧中间产物或写入新版本目录
+
 # 队列定义
 # - cpu: CPU 密集（镜头切分、关键帧抽取、备份）
 # - gpu: GPU 密集（ASR、OCR、人脸检测、向量嵌入）
@@ -504,13 +511,11 @@ from celery.schedules import crontab
 
 celery_app.conf.beat_schedule = {
     "cleanup-expired-uploads": {
-        "task": "tasks.cleanup_expired_uploads",
-        "schedule": crontab(hour="*/6"),
-        # 清理时必须先 abort MinIO 分片 / delete 孤儿文件，再删除 DB 记录
-    },       # 每 6 小时清理过期上传会话
+        "task": "app.tasks.media.cleanup_expired_uploads",
+        "schedule": crontab(hour="*/6"),           # 每 6 小时清理过期上传会话（先清理 MinIO 孤儿文件，再删 DB）
     },
     "backup-database": {
-        "task": "tasks.backup_database",
+        "task": "app.tasks.backup.backup_database",
         "schedule": crontab(hour=2, minute=0),     # 每天凌晨 2 点备份
     },
 }
@@ -649,39 +654,61 @@ CREATE INDEX idx_media_segment_embedding ON media_segment
 #### 6.8.1 存储 Key 规范
 
 ```
-original/{site_id}/{asset_uuid}/source.mp4
-proxy/{site_id}/{asset_uuid}/720p.mp4
-thumb/{site_id}/{asset_uuid}/cover.jpg
-subtitle/{site_id}/{asset_uuid}/zh-CN.srt
-ai/{site_id}/{asset_uuid}/ocr.json
-backup/{date}/db.dump
+原始文件：  media-assets/original/{site_id}/{asset_uuid}/source.mp4
+转码产物：  media-assets/transcoded/{site_id}/{asset_uuid}/{preset_name}.mp4
+HLS：     hls/{site_id}/{asset_uuid}/{preset_name}/index.m3u8
+          hls/{site_id}/{asset_uuid}/{preset_name}/segment_{00001}.ts
+封面：     covers/{site_id}/{asset_uuid}/cover.jpg
+关键帧：   vms-keyframes/{site_id}/{asset_uuid}/shot_{shot_idx}/frame_{frame_idx}.jpg
+字幕：     media-assets/subtitles/{site_id}/{asset_uuid}/{language}.srt
+AI 结果： media-assets/ai/{site_id}/{asset_uuid}/asr.json / ocr.json / faces.json
+备份：     backup/{date}/db.dump
 ```
+
+> **规则**：所有 object key 禁止使用用户上传原始文件名作为主路径，只能作为 metadata 存储。
 
 使用 `aiobotocore` 统一 S3 客户端，开发用 MinIO，生产可无缝切换任意 S3 兼容存储（阿里云 OSS/华为云 OBS/Ceph），国产化零改动：
 
 ```python
-# utils/storage.py
+# utils/storage.py — S3-compatible object storage adapter
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 import aiobotocore.session
+from botocore.exceptions import ClientError
 
 class Storage:
     def __init__(self):
-        session = aiobotocore.session.get_session()
-        self._session = session
+        self._session = aiobotocore.session.get_session()
 
-    async def _get_client(self):
-        return self._session.create_client(
+    @asynccontextmanager
+    async def client(self, public: bool = False) -> AsyncGenerator:
+        """获取 S3 客户端上下文管理器。public=True 使用外部地址（前端直传）"""
+        endpoint = (
+            settings.S3_PUBLIC_ENDPOINT if public
+            else settings.S3_INTERNAL_ENDPOINT
+        )
+        async with self._session.create_client(
             "s3",
-            endpoint_url=settings.S3_ENDPOINT,        # http://minio:9000
-            aws_access_key_id=settings.S3_ACCESS_KEY,  # minioadmin
+            endpoint_url=endpoint,
+            aws_access_key_id=settings.S3_ACCESS_KEY,
             aws_secret_access_key=settings.S3_SECRET_KEY,
             region_name=settings.S3_REGION,
-        )
+        ) as client:
+            yield client
 
-    async def upload(self, bucket: str, key: str, data: bytes) -> str: ...
-    async def download(self, bucket: str, key: str) -> bytes: ...
+    async def upload(self, bucket: str, key: str, data: bytes) -> str:
+        async with self.client() as c:
+            await c.put_object(Bucket=bucket, Key=key, Body=data)
+            return key
+
+    async def download(self, bucket: str, key: str) -> bytes:
+        async with self.client() as c:
+            resp = await c.get_object(Bucket=bucket, Key=key)
+            return await resp["Body"].read()
+
     async def get_presigned_url(self, bucket: str, key: str, expires: int = 3600) -> str: ...
     async def get_presigned_upload_url(self, bucket: str, key: str, expires: int = 3600) -> str:
-        """生成预签名上传 URL，前端直传 MinIO/S3，不经过后端"""
+        """生成预签名上传 URL（使用 S3_PUBLIC_ENDPOINT），前端直传不经过后端"""
         ...
     async def create_multipart_upload(self, bucket: str, key: str) -> str:
         """初始化分片上传，返回 upload_id"""
@@ -692,22 +719,27 @@ class Storage:
     async def complete_multipart_upload(self, bucket: str, key: str, upload_id: str, parts: list) -> None:
         """完成分片上传，合并所有分片"""
         ...
+    async def abort_multipart_upload(self, bucket: str, key: str, upload_id: str) -> None:
+        """取消分片上传，清理已上传分片"""
+        ...
+
     async def ensure_bucket(self, bucket_name: str) -> None:
         """确保桶存在，不存在则创建，并配置 CORS（前端直传必需）"""
-        try:
-            await self.client.head_bucket(Bucket=bucket_name)
-        except ClientError:
-            await self.client.create_bucket(Bucket=bucket_name)
-        # 配置 CORS（前端直传 MinIO 必需，否则浏览器拦截）
-        cors_config = {
-            "CORSRules": [{
-                "AllowedOrigins": ["*"],  # 生产环境改为前端域名
-                "AllowedMethods": ["GET", "PUT", "POST"],
-                "AllowedHeaders": ["*"],
-                "ExposeHeaders": ["ETag"]
-            }]
-        }
-        await self.client.put_bucket_cors(Bucket=bucket_name, CORSConfiguration=cors_config)
+        async with self.client() as c:
+            try:
+                await c.head_bucket(Bucket=bucket_name)
+            except ClientError:
+                await c.create_bucket(Bucket=bucket_name)
+            # 配置 CORS（前端直传 MinIO 必需，否则浏览器拦截）
+            cors_config = {
+                "CORSRules": [{
+                    "AllowedOrigins": ["*"],  # 生产环境改为前端域名
+                    "AllowedMethods": ["GET", "PUT", "POST"],
+                    "AllowedHeaders": ["*"],
+                    "ExposeHeaders": ["ETag"]
+                }]
+            }
+            await c.put_bucket_cors(Bucket=bucket_name, CORSConfiguration=cors_config)
 ```
 
 **必须创建的桶**：`media-assets`、`hls`、`covers`、`vms-keyframes`。在 `main.py` 启动事件中调用 `storage.ensure_bucket()`。
@@ -881,9 +913,8 @@ volumes:
 GPU 覆盖（`docker-compose.gpu.yml`）：
 
 ```yaml
-# Phase 0 核心（开发启动必须）
 services:
-  celery_worker:
+  celery_worker_gpu:
     deploy:
       resources:
         reservations:
@@ -980,6 +1011,19 @@ system:user:manage / system:role:manage / system:config / system:audit
 | Role | 否 | 系统级 |
 | Permission | 否 | 系统级 |
 | AuditLog | 可选 | 记录 site_id 但可为空（系统操作无站点） |
+
+**User-Site 访问关系**（用户可访问哪些站点）：
+
+```python
+user_site = Table(
+    "user_site",
+    Base.metadata,
+    Column("user_id", BigInteger, ForeignKey("user.id", ondelete="CASCADE"), primary_key=True),
+    Column("site_id", BigInteger, ForeignKey("site.id", ondelete="CASCADE"), primary_key=True),
+)
+```
+
+> 三元权限模型：`User` — `UserSite` — `Role` — `RolePermission`。用户通过 UserSite 确定可访问站点，通过 Role 确定可执行操作。
 
 ---
 
@@ -1103,3 +1147,4 @@ httpx>=0.27
 | 2026-06-11 | v2.0 | **[Bug修复]** UUID default 必须用 lambda+str() / 软删除与CASCADE冲突说明+业务层级联 / MinIO CORS配置(前端直传必需) / 内容状态机强制校验(VALID_TRANSITIONS) / 孤儿文件清理(先MinIO后DB) / 转码产物关联(source_media_asset_id) |
 | 2026-06-11 | v2.0.1 | Flower 监控服务(docker-compose, :5555) |
 | 2026-06-11 | v2.1 | SQLAdmin hook 签名修正(+request参数) / on_model_change仅校验,after_model_change触发任务 / 存储Key规范(original/proxy/thumb/subtitle/ai/backup) / ApiResponse重命名(避免与FastAPI Response冲突) / Docker Compose分阶段说明(P0/P1/P2) |
+| 2026-06-11 | v2.2 | **[代码级Bug修复]** Celery Beat语法修正+task全路径(app.tasks.xxx) / Storage改用asynccontextmanager+S3_INTERNAL/PUBLIC_ENDPOINT / GPU override修正指向celery_worker_gpu / 详细存储Key规范(禁止原始文件名作主路径) / user_site关联表(三元权限模型) / Celery幂等性硬规则 / abort_multipart_upload / 版本改称P0开发锁定版 |
