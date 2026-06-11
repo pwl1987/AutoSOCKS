@@ -2,7 +2,7 @@
 
 > **项目名称**：media-platform（临沂融媒体中心）
 > **日期**：2026-06-11
-> **版本**：v2.2（P0 开发锁定版）
+> **版本**：v2.2.1（P0 开发锁定版）
 > **团队**：1-2 人，全程 AI 辅助开发
 
 ---
@@ -251,7 +251,7 @@ class SensitiveWord(BaseModel):
     is_enabled = Column(Boolean, default=True)
 ```
 
-### 4.6 VMS 与 MediaAsset 关系
+### 4.7 VMS 与 MediaAsset 关系
 
 ```python
 class VMSVideo(BaseModel):
@@ -313,12 +313,26 @@ class MediaAsset(BaseModel):
 ```python
 class MediaUploadSession(BaseModel):
     __tablename__ = "media_upload_session"
-    media_asset_id = Column(BigInteger, ForeignKey("media_asset.id", ondelete="CASCADE"))
+
+    site_id = Column(BigInteger, ForeignKey("site.id", ondelete="RESTRICT"), nullable=False)
+    created_by_id = Column(BigInteger, ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+
+    upload_id = Column(String(200), nullable=False)        # S3 multipart upload_id
+    bucket = Column(String(100), nullable=False)
+    object_key = Column(String(500), nullable=False)
+
+    filename = Column(String(500), nullable=False)
+    file_size = Column(BigInteger, nullable=False)
+    mime_type = Column(String(100), nullable=False)
+    checksum_sha256 = Column(String(64), nullable=True)
+
     total_parts = Column(Integer, nullable=False)
-    uploaded_parts = Column(JSONB, default=list)            # [1, 2, 3, ...]
-    part_size = Column(BigInteger, nullable=False)          # 如 10MB
-    status = Column(String(20), default="pending")          # pending/uploading/completed/aborted
-    expires_at = Column(DateTime(timezone=True))            # 24h 过期清理
+    uploaded_parts = Column(JSONB, default=list)           # [{part_number, etag, size}]
+    part_size = Column(BigInteger, nullable=False)
+
+    status = Column(String(20), default="pending")         # pending/uploading/completed/aborted/expired
+    media_asset_id = Column(BigInteger, ForeignKey("media_asset.id", ondelete="SET NULL"), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)  # 24h 过期清理
 ```
 
 ### 4.12 标识符使用约定
@@ -359,7 +373,7 @@ class PageResponse(BaseModel):
     """统一分页响应"""
     code: int = 0
     message: str = "success"
-    data: List[Any] = []
+    data: list[T] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     size: int = 20
@@ -395,9 +409,32 @@ async def health():
 
 @app.get("/ready")
 async def ready(db=Depends(get_db)):
-    # 检查数据库连接、Redis、MinIO 等依赖
-    await db.execute(text("SELECT 1"))
-    return {"status": "ready"}
+    checks = {}
+    try:
+        await db.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as exc:
+        checks["postgres"] = str(exc)
+
+    try:
+        r = redis.from_url(settings.REDIS_URL)
+        await r.ping()
+        checks["redis"] = "ok"
+    except Exception as exc:
+        checks["redis"] = str(exc)
+
+    try:
+        async with storage.client(public=False) as c:
+            await c.list_buckets()
+        checks["minio"] = "ok"
+    except Exception as exc:
+        checks["minio"] = str(exc)
+
+    healthy = all(v == "ok" for v in checks.values())
+    return {
+        "status": "ready" if healthy else "not_ready",
+        "checks": checks,
+    }
 ```
 
 ### 5.5 API 限流
@@ -619,7 +656,7 @@ class ContentAdmin(ModelView, model=Content):
     async def after_model_change(self, data: dict, model: Any, is_created: bool, request: Request) -> None:
         """创建/更新提交成功后（此处可安全触发 Celery 任务）"""
         # 异步工作交给 Celery（仅在提交成功后触发）
-        dispatch("tasks.sync.dispatch_content", content_id=model.id)
+        dispatch("app.tasks.sync.dispatch_content", content_id=model.id)
 ```
 
 ### 6.7 pgvector 索引
@@ -710,6 +747,10 @@ class Storage:
     async def get_presigned_upload_url(self, bucket: str, key: str, expires: int = 3600) -> str:
         """生成预签名上传 URL（使用 S3_PUBLIC_ENDPOINT），前端直传不经过后端"""
         ...
+
+    # ⚠️ 规则：Presigned URL 必须使用 public=True（S3_PUBLIC_ENDPOINT），
+    # 后端内部 put/get/list/abort 必须使用 public=False（S3_INTERNAL_ENDPOINT）。
+    # 否则浏览器无法访问 minio 容器内部地址。
     async def create_multipart_upload(self, bucket: str, key: str) -> str:
         """初始化分片上传，返回 upload_id"""
         ...
@@ -848,6 +889,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    env_file: .env
 
   # Celery 任务监控（开发调试用）
   flower:
@@ -1012,18 +1054,24 @@ system:user:manage / system:role:manage / system:config / system:audit
 | Permission | 否 | 系统级 |
 | AuditLog | 可选 | 记录 site_id 但可为空（系统操作无站点） |
 
-**User-Site 访问关系**（用户可访问哪些站点）：
+**User-Site 访问关系**（站点级角色，用户在不同站点可有不同角色）：
 
 ```python
-user_site = Table(
-    "user_site",
-    Base.metadata,
-    Column("user_id", BigInteger, ForeignKey("user.id", ondelete="CASCADE"), primary_key=True),
-    Column("site_id", BigInteger, ForeignKey("site.id", ondelete="CASCADE"), primary_key=True),
-)
+class UserSite(BaseModel):
+    __tablename__ = "user_site"
+
+    user_id = Column(BigInteger, ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    site_id = Column(BigInteger, ForeignKey("site.id", ondelete="CASCADE"), nullable=False)
+    role_id = Column(BigInteger, ForeignKey("role.id", ondelete="RESTRICT"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "site_id", name="uq_user_site"),
+    )
 ```
 
-> 三元权限模型：`User` — `UserSite` — `Role` — `RolePermission`。用户通过 UserSite 确定可访问站点，通过 Role 确定可执行操作。
+> 示例：张三在主站是编辑，在子站A是审核员，李四在主站是管理员。
+
+> 权限模型：`User` — `UserSite(site_id, role_id)` — `Role` — `RolePermission`。
 
 ---
 
@@ -1148,3 +1196,4 @@ httpx>=0.27
 | 2026-06-11 | v2.0.1 | Flower 监控服务(docker-compose, :5555) |
 | 2026-06-11 | v2.1 | SQLAdmin hook 签名修正(+request参数) / on_model_change仅校验,after_model_change触发任务 / 存储Key规范(original/proxy/thumb/subtitle/ai/backup) / ApiResponse重命名(避免与FastAPI Response冲突) / Docker Compose分阶段说明(P0/P1/P2) |
 | 2026-06-11 | v2.2 | **[代码级Bug修复]** Celery Beat语法修正+task全路径(app.tasks.xxx) / Storage改用asynccontextmanager+S3_INTERNAL/PUBLIC_ENDPOINT / GPU override修正指向celery_worker_gpu / 详细存储Key规范(禁止原始文件名作主路径) / user_site关联表(三元权限模型) / Celery幂等性硬规则 / abort_multipart_upload / 版本改称P0开发锁定版 |
+| 2026-06-11 | v2.2.1 | PageResponse.data=Field(default_factory=list) / UserSite模型含role_id(站点级角色) / MediaUploadSession补全字段(upload_id/bucket/object_key/filename/file_size/mime_type/site_id) / /ready真正检查Postgres+Redis+MinIO / SQLAdmin任务名统一app.tasks.xxx / celery_beat补env_file / Storage presigned URL使用规则 / 章节编号修正 |
