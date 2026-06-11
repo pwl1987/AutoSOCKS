@@ -2,7 +2,7 @@
 
 > **项目名称**：media-platform（临沂融媒体中心）
 > **日期**：2026-06-11
-> **版本**：v2.2.1（P0 开发锁定版）
+> **版本**：v2.2.2（P0 开发锁定版）
 > **团队**：1-2 人，全程 AI 辅助开发
 
 ---
@@ -103,7 +103,7 @@ Z:\media-platform\
 │   │   │   └── workflow.py
 │   │   ├── schemas/                    # Pydantic 请求/响应模型
 │   │   │   ├── __init__.py
-│   │   │   ├── response.py            # 统一响应格式 Response / PageResponse
+│   │   │   ├── response.py            # 统一响应格式 ApiResponse / PageResponse
 │   │   │   ├── pagination.py          # PageParams
 │   │   │   └── ...                     # 按模块分文件
 │   │   ├── services/                   # 业务逻辑层（仅异步，不被 Celery 导入）
@@ -114,7 +114,7 @@ Z:\media-platform\
 │   │   │   ├── backup.py               # @celery_app.task(queue="io")
 │   │   │   └── sync.py
 │   │   └── utils/                      # 工具函数
-│   │       ├── storage.py              # MinIO 封装
+│   │       ├── storage.py              # S3-compatible object storage adapter
 │   │       └── inference.py            # AI 推理客户端
 │   ├── templates/sqladmin/             # SQLAdmin 模板覆盖
 │   ├── static/                         # 自定义 CSS/JS
@@ -333,6 +333,12 @@ class MediaUploadSession(BaseModel):
     status = Column(String(20), default="pending")         # pending/uploading/completed/aborted/expired
     media_asset_id = Column(BigInteger, ForeignKey("media_asset.id", ondelete="SET NULL"), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)  # 24h 过期清理
+
+    __table_args__ = (
+        UniqueConstraint("upload_id", name="uq_media_upload_session_upload_id"),
+        Index("idx_media_upload_session_expires_at", "expires_at"),
+        Index("idx_media_upload_session_status", "status"),
+    )
 ```
 
 ### 4.12 标识符使用约定
@@ -358,18 +364,18 @@ async def get_media(uuid: UUID): ...
 
 ```python
 # schemas/response.py
-from typing import Any, Optional, List, Generic, TypeVar
-from pydantic import BaseModel
+from typing import Any, Generic, TypeVar
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 
-class ApiResponse(BaseModel):
+class ApiResponse(BaseModel, Generic[T]):
     """统一响应格式"""
     code: int = 0
     message: str = "success"
-    data: Any = None
+    data: T | None = None
 
-class PageResponse(BaseModel):
+class PageResponse(BaseModel, Generic[T]):
     """统一分页响应"""
     code: int = 0
     message: str = "success"
@@ -431,6 +437,9 @@ async def ready(db=Depends(get_db)):
         checks["minio"] = str(exc)
 
     healthy = all(v == "ok" for v in checks.values())
+    if not healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
     return {
         "status": "ready" if healthy else "not_ready",
         "checks": checks,
@@ -622,6 +631,11 @@ from sqladmin.authentication import AuthenticationBackend
 from starlette.requests import Request
 from app.config import settings
 
+# ⚠️ main.py 必须挂载 SessionMiddleware，否则 request.session 不可用：
+# from starlette.middleware.sessions import SessionMiddleware
+# app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY,
+#                    same_site="lax", https_only=settings.ENV == "production")
+
 class AdminAuth(AuthenticationBackend):
     async def login(self, request: Request) -> bool:
         form = await request.form()
@@ -691,7 +705,7 @@ CREATE INDEX idx_media_segment_embedding ON media_segment
 #### 6.8.1 存储 Key 规范
 
 ```
-原始文件：  media-assets/original/{site_id}/{asset_uuid}/source.mp4
+原始文件：  media-assets/original/{site_id}/{asset_uuid}/source.{ext}
 转码产物：  media-assets/transcoded/{site_id}/{asset_uuid}/{preset_name}.mp4
 HLS：     hls/{site_id}/{asset_uuid}/{preset_name}/index.m3u8
           hls/{site_id}/{asset_uuid}/{preset_name}/segment_{00001}.ts
@@ -702,7 +716,7 @@ AI 结果： media-assets/ai/{site_id}/{asset_uuid}/asr.json / ocr.json / faces.
 备份：     backup/{date}/db.dump
 ```
 
-> **规则**：所有 object key 禁止使用用户上传原始文件名作为主路径，只能作为 metadata 存储。
+> **规则**：所有 object key 禁止使用用户上传原始文件名作为主路径，只能作为 metadata 存储。`ext` 由 MIME 白名单映射生成（如 video/mp4→mp4, audio/mpeg→mp3, image/jpeg→jpg），不直接使用用户文件名后缀。
 
 使用 `aiobotocore` 统一 S3 客户端，开发用 MinIO，生产可无缝切换任意 S3 兼容存储（阿里云 OSS/华为云 OBS/Ceph），国产化零改动：
 
@@ -1197,3 +1211,4 @@ httpx>=0.27
 | 2026-06-11 | v2.1 | SQLAdmin hook 签名修正(+request参数) / on_model_change仅校验,after_model_change触发任务 / 存储Key规范(original/proxy/thumb/subtitle/ai/backup) / ApiResponse重命名(避免与FastAPI Response冲突) / Docker Compose分阶段说明(P0/P1/P2) |
 | 2026-06-11 | v2.2 | **[代码级Bug修复]** Celery Beat语法修正+task全路径(app.tasks.xxx) / Storage改用asynccontextmanager+S3_INTERNAL/PUBLIC_ENDPOINT / GPU override修正指向celery_worker_gpu / 详细存储Key规范(禁止原始文件名作主路径) / user_site关联表(三元权限模型) / Celery幂等性硬规则 / abort_multipart_upload / 版本改称P0开发锁定版 |
 | 2026-06-11 | v2.2.1 | PageResponse.data=Field(default_factory=list) / UserSite模型含role_id(站点级角色) / MediaUploadSession补全字段(upload_id/bucket/object_key/filename/file_size/mime_type/site_id) / /ready真正检查Postgres+Redis+MinIO / SQLAdmin任务名统一app.tasks.xxx / celery_beat补env_file / Storage presigned URL使用规则 / 章节编号修正 |
+| 2026-06-11 | v2.2.2 | response导入Field+Generic[T] / 项目结构注释更新(ApiResponse/S3-compatible) / SessionMiddleware说明 / /ready失败返回HTTP503 / MediaUploadSession索引(upload_id唯一+expires_at+status) / source.mp4→source.{ext}+MIME映射规则 |
